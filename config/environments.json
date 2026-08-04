@@ -13,14 +13,43 @@
     "Any value still carrying the REPLACE_ME sentinel blocks sending for that pipeline, so an",
     "unconfirmed address is safe to leave in place rather than a hazard.",
     "",
-    "Verified: byOperation.initialLoad and byOperation.shipmentUpdate for testing, from the",
-    "process spec. Everything else is UNCONFIRMED — see README."
+    "Verified: both Salesforce endpoints, and byOperation.initialLoad and",
+    "byOperation.shipmentUpdate for testing. The staging mailboxes and the dataUpdate and",
+    "received mailboxes are UNCONFIRMED — see README.",
+    "",
+    "instanceUrl carries no trailing slash: the REST path is appended to it directly, and a",
+    "double slash before /services/data is rejected."
   ],
   "operations": {
     "initialLoad": { "label": "Initial load", "needsMail": true },
+    "updateLoad": {
+      "label": "Update load",
+      "needsMail": true,
+      "$comment": "Distinct from a shipment update. The mailbox is named 'Initial Load & Update Load DL', so an update load shares the initial-load address. The Octo 'Update Load' sheet is this operation."
+    },
     "shipmentUpdate": { "label": "Shipment update", "needsMail": true },
     "dataUpdate": { "label": "Data update", "needsMail": true },
     "received": { "label": "Received at 3PL", "needsMail": true },
+    "nonRepairable": {
+      "label": "Non-repairable at MFR",
+      "needsMail": true,
+      "$comment": "Mailbox known, CSV format not yet — no template sheet exists for it."
+    },
+    "faultyReturned": {
+      "label": "Faulty returned to VVDN",
+      "needsMail": true,
+      "$comment": "Mailbox known, CSV format not yet."
+    },
+    "deviceDead": {
+      "label": "Mark dead",
+      "needsMail": true,
+      "$comment": "Mailbox known in both envs, CSV format not yet. NOTE: the two orgs use different local parts for this — testing's is assets_non_repairable_at_repair_center, staging's is asset_markdead_emailservice. Confirm they are the same operation."
+    },
+    "undoDead": {
+      "label": "Undo mark dead",
+      "needsMail": true,
+      "$comment": "Staging only — no testing equivalent was supplied. Mailbox known, CSV format not yet."
+    },
     "wizardUpload": { "label": "Wizard upload", "needsMail": false }
   },
   "environments": {
@@ -28,8 +57,9 @@
       "label": "Testing",
       "verified": true,
       "salesforce": {
-        "loginUrl": "https://test.salesforce.com",
+        "loginUrl": "https://netradyne--testing.sandbox.my.salesforce.com",
         "instanceUrl": "https://netradyne--testing.sandbox.my.salesforce.com",
+        "ssoLabel": "Netradyne Testing SSO",
         "apiVersion": "v61.0",
         "sandboxName": "netradyne--testing"
       },
@@ -40,20 +70,50 @@
             "subject": "Initial Load File",
             "body": "Please find the attached updated Initial Load CSV."
           },
+          "updateLoad": {
+            "$comment": "Same mailbox as initialLoad — the DL is named 'Initial Load & Update Load'.",
+            "to": "Asset-Shipped-From-MFR-Testing@netradyne.com",
+            "subject": "Update Load File",
+            "body": "Please find the attached Update Load CSV."
+          },
           "shipmentUpdate": {
             "to": "Asset_Shipment_Update_Testing@netradyne.com",
             "subject": "Shipment Update",
             "body": "Please find the attached Initial Load CSV for shipment update processing."
           },
-          "dataUpdate": {
-            "to": "REPLACE_ME_Asset_Data_Update_Testing@netradyne.com",
-            "subject": "Data Update",
-            "body": "Please find the attached Data Update CSV."
-          },
           "received": {
-            "to": "REPLACE_ME_Asset_Received_At_3PL_Testing@netradyne.com",
+            "to": "Asset-Received-At-3PL-Testing@netradyne.com",
             "subject": "Device Received",
             "body": "Please find the attached Received CSV."
+          },
+          "nonRepairable": {
+            "to": "Non-Repairable-Asset-At-MFR-Testing@netradyne.com",
+            "subject": "Non-Repairable Asset At MFR",
+            "body": "Please find the attached Non-Repairable Asset CSV."
+          },
+          "faultyReturned": {
+            "$comment": "A Salesforce Apex email service address, not a netradyne.com mailbox. The local part and host are generated per org and CHANGE ON SANDBOX REFRESH — re-copy both after any refresh.",
+            "to": "assets_returned_to_vvdn@b1m859pz5vx757rxiqt4f31z1rhnc8t7jbvprlnyikavjnw8q.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
+            "subject": "Faulty Devices Returned",
+            "body": "Please find the attached Faulty Devices Returned CSV."
+          },
+          "deviceDead": {
+            "$comment": "Also an Apex email service address; same refresh caveat as faultyReturned.",
+            "to": "assets_non_repairable_at_repair_center@3twzwb230e021ajeyfch6w3jzq4kjilg81sel7icyrkmv09p9.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
+            "subject": "Device Dead",
+            "body": "Please find the attached Device Dead CSV."
+          },
+          "undoDead": {
+            "$comment": "NOT in the supplied testing DL list — only Staging has an undo-dead service.",
+            "to": "REPLACE_ME_no_undo_dead_DL_supplied_for_testing",
+            "subject": "Undo Device Dead",
+            "body": "Please find the attached Undo Device Dead CSV."
+          },
+          "dataUpdate": {
+            "$comment": "NOT in the supplied DL list. Haptic_Data_Update.csv has no confirmed mailbox — do not guess, since a wrong address is a silent no-op or a double load.",
+            "to": "REPLACE_ME_no_data_update_DL_supplied@netradyne.com",
+            "subject": "Data Update",
+            "body": "Please find the attached Data Update CSV."
           }
         },
         "byFamilyOperation": {
@@ -65,40 +125,99 @@
       "label": "Staging",
       "verified": false,
       "salesforce": {
-        "loginUrl": "https://test.salesforce.com",
-        "instanceUrl": "REPLACE_ME_https://netradyne--staging.sandbox.my.salesforce.com",
+        "loginUrl": "https://netradyne--staging.sandbox.my.salesforce.com",
+        "instanceUrl": "https://netradyne--staging.sandbox.my.salesforce.com",
+        "ssoLabel": "Netradyne Staging SSO",
         "apiVersion": "v61.0",
-        "sandboxName": "REPLACE_ME_netradyne--staging"
+        "sandboxName": "netradyne--staging"
       },
       "distributionLists": {
+        "$comment": [
+          "Every Staging address is a Salesforce Apex email service, not a netradyne.com mailbox.",
+          "All six share the host suffix cw-5p40juac.usa886s.apex.sandbox.salesforce.com but each",
+          "service has its own random subdomain. These are generated per org and CHANGE ON SANDBOX",
+          "REFRESH — re-copy all of them from Setup > Email Services after any refresh, or sends",
+          "will bounce.",
+          "",
+          "Two local parts here differ only by the word 'undo': asset_markdead_emailservice and",
+          "asset_markundodead_emailservice. Sending one to the other reverses the intent, which is",
+          "exactly what the local-part match on every send exists to stop."
+        ],
         "byOperation": {
           "initialLoad": {
-            "to": "REPLACE_ME_Asset-Shipped-From-MFR-Staging@netradyne.com",
+            "to": "assets_shipped_from_vvdn@n-kcf9xc8epagbqzn8s2n0auzvvhctyaemf5dyqsn4gzj7fp05t.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
             "subject": "Initial Load File",
             "body": "Please find the attached updated Initial Load CSV."
           },
           "shipmentUpdate": {
-            "to": "REPLACE_ME_Asset_Shipment_Update_Staging@netradyne.com",
+            "to": "asset-shipment-update-from-mfr@8-2q8l2fcsqnydqmqpdolb5c1vvczlql24bplioi5vynwvq5kb5k.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
             "subject": "Shipment Update",
             "body": "Please find the attached Initial Load CSV for shipment update processing."
           },
-          "dataUpdate": {
-            "to": "REPLACE_ME_Asset_Data_Update_Staging@netradyne.com",
-            "subject": "Data Update",
-            "body": "Please find the attached Data Update CSV."
-          },
           "received": {
-            "to": "REPLACE_ME_Asset_Received_At_3PL_Staging@netradyne.com",
+            "to": "assets_received_at_3pl@27feq64a77zk2ur4893dc4ikcr5wcj5lambng671go540753pg.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
             "subject": "Device Received",
             "body": "Please find the attached Received CSV."
+          },
+          "faultyReturned": {
+            "$comment": "Labelled 'Asset Returned' in the Staging list. Same local part as testing's 'Faulty Devices Returned', which is what identifies them as the same operation.",
+            "to": "assets_returned_to_vvdn@1idbjnw3je6tkz14adazujydgbkewyh9e9gm3u79j9655fua9g.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "subject": "Faulty Devices Returned",
+            "body": "Please find the attached Faulty Devices Returned CSV."
+          },
+          "deviceDead": {
+            "to": "asset_markdead_emailservice@srvv3bp9arputgc7pvyynut85ugbfmwn5drm400808hfufkkn.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "subject": "Device Dead",
+            "body": "Please find the attached Device Dead CSV."
+          },
+          "undoDead": {
+            "to": "asset_markundodead_emailservice@u-17hv62turjunobzrzfytmp0ukcbe31xtytao41or3qpft82xau.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "subject": "Undo Device Dead",
+            "body": "Please find the attached Undo Device Dead CSV."
+          },
+          "updateLoad": {
+            "$comment": "NOT supplied for Staging. Testing bundles it with initial load under one 'Initial Load & Update Load DL', so the same address here is plausible — but not assumed, because a wrong mailbox is a silent no-op or a double load. Confirm and paste.",
+            "to": "REPLACE_ME_no_update_load_DL_supplied_for_staging",
+            "subject": "Update Load File",
+            "body": "Please find the attached Update Load CSV."
+          },
+          "nonRepairable": {
+            "$comment": "NOT supplied for Staging. Testing has Non-Repairable-Asset-At-MFR-Testing@netradyne.com; no Staging equivalent was given.",
+            "to": "REPLACE_ME_no_non_repairable_DL_supplied_for_staging",
+            "subject": "Non-Repairable Asset At MFR",
+            "body": "Please find the attached Non-Repairable Asset CSV."
+          },
+          "dataUpdate": {
+            "$comment": "NOT supplied for either environment.",
+            "to": "REPLACE_ME_no_data_update_DL_supplied",
+            "subject": "Data Update",
+            "body": "Please find the attached Data Update CSV."
           }
         },
         "byFamilyOperation": {}
       }
     }
   },
+  "mail": {
+    "$comment": [
+      "How mail leaves the app.",
+      "",
+      "  outlook-web — drive Outlook on the web with Playwright. The default, because SMTP is not",
+      "                usable in this tenant: it returns 535 5.7.139, which is Microsoft's code for",
+      "                SMTP AUTH being disabled for the tenant or mailbox. No app password can get",
+      "                past that; only an admin re-enabling basic auth would, and Microsoft has",
+      "                deprecated it.",
+      "  smtp        — kept so it can be switched back if SMTP AUTH is ever re-enabled.",
+      "",
+      "autoSend applies to outlook-web. Left false, the app fills the compose window and stops so",
+      "you read it and press Send. Turn it on once you trust what it produces — a wrong send here",
+      "is a real device load."
+    ],
+    "transport": "outlook-web",
+    "autoSend": false
+  },
   "smtp": {
-    "$comment": "Host/port only. Username and password are entered in the UI per session.",
+    "$comment": "Host/port only. Username and password are entered in the UI per session. Currently unusable — see mail.$comment.",
     "host": "smtp.office365.com",
     "port": 587,
     "secure": false,

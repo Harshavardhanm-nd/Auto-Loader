@@ -4,7 +4,7 @@
   "family": "octo",
   "familyLabel": "Octo (D-810)",
   "kind": "device",
-  "operation": "shipmentUpdate",
+  "operation": "updateLoad",
   "status": "verified",
   "sourceTemplate": "Octo Update Load NAZ110001.csv",
   "bytes": {
@@ -68,6 +68,7 @@
     "native_cam_sku": "NATIVECAM"
   },
   "notes": [
+    "Classified as \"updateLoad\", not \"shipmentUpdate\". The supplied DL list names one mailbox \"Initial Load & Update Load DL\" and a separate one \"Shipment Update DL\", so an update load is its own operation sharing the initial-load address. This sheet is literally named \"Octo Update Load\". Worth confirming, because the mailbox is the only thing that tells the parser which operation a file is.",
     "Octo bundles its accessories inline: four extra columns carry the wired speaker and native camera SKU and serial. There is no separate accessory file for this family.",
     "The header contains \"Wired_Speaker _SKU(required)\" with a space before _SKU. That is in the real sheet and is reproduced byte for byte.",
     "wifi_mac and bt_mac are a fixed prefix plus a decimal counter, not hex MAC arithmetic. In this sheet both start at 21, where the Octo initial-load sheet starts them at 7 and 4.",

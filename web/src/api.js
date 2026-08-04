@@ -47,7 +47,9 @@ export const api = {
   environments: () => get('/api/auth/environments'),
   session: (env) => get(`/api/auth/session?${q({ env })}`),
   verifySession: (env) => post('/api/auth/session/verify', { env }),
-  logout: (env) => post('/api/auth/logout', { env }),
+  refreshSession: (env) => post('/api/auth/session/refresh', { env }),
+  logout: (env, forgetBrowser = false) => post('/api/auth/logout', { env, forgetBrowser }),
+  forgetBrowser: (env) => post('/api/auth/forget-browser', { env }),
 
   login: (body) => post('/api/auth/login', body),
   loginStatus: (attemptId) => get(`/api/auth/login/${attemptId}`),
@@ -83,6 +85,11 @@ export const api = {
     get(`/api/runs/${runId}/preview/${encodeURIComponent(key)}?${q({ maxBytes })}`),
   validate: (runId, operation) => get(`/api/runs/${runId}/validate?${q({ operation })}`),
   send: (runId, body) => post(`/api/runs/${runId}/send`, body),
+  confirmSend: (runId, body) => post(`/api/runs/${runId}/send/confirm`, body),
+  closeMailWindow: (runId) => post(`/api/runs/${runId}/mail/close`, {}),
+  outlookSignIn: (env) => post('/api/auth/outlook/signin', { env }),
+  outlookVerify: (env) => post('/api/auth/outlook/verify', { env }),
+  outlookForget: (env) => post('/api/auth/outlook/forget', { env }),
 
   startPoll: (runId, stage) => post(`/api/runs/${runId}/poll/${stage}/start`, {}),
   stopPoll: (runId, stage) => post(`/api/runs/${runId}/poll/${stage}/stop`, {}),

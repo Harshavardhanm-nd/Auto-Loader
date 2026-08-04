@@ -167,7 +167,11 @@ export default function App() {
           </div>
           <div className="line">
             <span className={`dot ${session?.smtp?.configured ? 'ok' : 'muted'}`} />
-            {session?.smtp?.configured ? `Mail: ${session.smtp.user}` : 'Mail: not configured'}
+            {session?.smtp?.transport === 'outlook-web'
+              ? 'Mail: Outlook web'
+              : session?.smtp?.configured
+                ? `Mail: ${session.smtp.user}`
+                : 'Mail: not configured'}
           </div>
           {run ? (
             <div className="line">

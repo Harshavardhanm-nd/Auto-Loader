@@ -7,7 +7,12 @@
  * land".
  */
 
-import { readSession, markSessionExpired, markSessionVerified } from './sf-session.js';
+import {
+  readSession,
+  markSessionExpired,
+  markSessionVerified,
+  refreshSessionSilently,
+} from './sf-session.js';
 import { decodeSku, scoreSkuMatch } from './sku-decoder.js';
 import { loadProfiles } from '../lib/config.js';
 
@@ -21,11 +26,16 @@ export class SalesforceNotConnectedError extends Error {
 }
 
 export class SalesforceSessionExpiredError extends Error {
-  constructor(env) {
-    super(`The ${env} Salesforce session has expired. Reconnect to continue.`);
+  constructor(env, reason = null) {
+    super(
+      `The ${env} Salesforce session has expired and could not be renewed automatically` +
+        (reason ? ` (${reason}).` : '.') +
+        ' Reconnect to continue.'
+    );
     this.name = 'SalesforceSessionExpiredError';
     this.status = 401;
     this.env = env;
+    this.reason = reason;
   }
 }
 
@@ -38,7 +48,15 @@ export function soqlInList(values) {
   return values.map((v) => `'${soqlString(v)}'`).join(',');
 }
 
-async function request(env, urlPath, { method = 'GET' } = {}) {
+/**
+ * One REST call.
+ *
+ * On 401 the sid is re-minted from the remembered browser profile and the call retried once,
+ * silently. A Salesforce sid expires on the org's session timeout — a couple of hours — while the
+ * profile's trust lasts weeks, so the overwhelming majority of 401s need no human at all. Only when
+ * the refresh cannot produce a working sid does this surface as "reconnect".
+ */
+async function request(env, urlPath, { method = 'GET', allowRefresh = true } = {}) {
   const session = readSession(env);
   if (!session) throw new SalesforceNotConnectedError(env);
 
@@ -52,6 +70,15 @@ async function request(env, urlPath, { method = 'GET' } = {}) {
   });
 
   if (res.status === 401) {
+    if (allowRefresh) {
+      const refresh = await refreshSessionSilently(env);
+      if (refresh.refreshed) {
+        // Retry once with the new sid. allowRefresh:false so a genuinely dead session cannot loop.
+        return request(env, urlPath, { method, allowRefresh: false });
+      }
+      markSessionExpired(env, `401 and silent refresh failed: ${refresh.reason}`);
+      throw new SalesforceSessionExpiredError(env, refresh.reason);
+    }
     markSessionExpired(env);
     throw new SalesforceSessionExpiredError(env);
   }

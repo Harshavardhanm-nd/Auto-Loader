@@ -67,17 +67,57 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
     }
   };
 
-  const send = async (family, force = false) => {
+  const send = async (family, { force = false, autoSend } = {}) => {
     setBusy(`send:${family}`);
     setNotice(null);
     try {
-      const result = await api.send(runId, { operation: activeOperation, family, force });
+      const result = await api.send(runId, { operation: activeOperation, family, force, autoSend });
+
+      // Compose-and-stop: the message is filled in but not sent, so this is not recorded as a
+      // send. The user presses Send in Outlook, then confirms here.
+      if (result.composedOnly) {
+        setNotice({
+          tone: 'warn',
+          title: `Composed in Outlook — press Send there, then confirm below`,
+          body: `${result.filename} → ${result.to}. ${result.message}`,
+          confirmFamily: family,
+        });
+        return;
+      }
+
       setNotice({
         tone: result.sentItemsWarning ? 'warn' : 'ok',
         title: result.sentItemsWarning
           ? `Sent to ${result.send.to} — but not confirmed in Sent Items`
           : `Sent to ${result.send.to} and confirmed in Sent Items`,
         body: result.sentItemsWarning ?? `${result.send.filename} · ${result.send.rowCount} row(s)`,
+      });
+      await refreshRun();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirmSend = async (family, force = false) => {
+    setBusy(`confirm:${family}`);
+    try {
+      const result = await api.confirmSend(runId, { operation: activeOperation, family, force });
+      if (!result.recorded) {
+        setNotice({
+          tone: 'fail',
+          title: 'Not recorded as sent',
+          body: result.message,
+          confirmFamily: family,
+          allowForce: true,
+        });
+        return;
+      }
+      setNotice({
+        tone: 'ok',
+        title: `Recorded: sent to ${result.send.to}`,
+        body: `${result.send.filename}${result.send.forced ? ' (forced — Sent Items was not confirmed)' : ' — confirmed in Sent Items'}`,
       });
       await refreshRun();
     } catch (err) {
@@ -190,6 +230,29 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
       {notice ? (
         <Callout tone={notice.tone} title={notice.title}>
           {notice.body}
+          {notice.confirmFamily ? (
+            <div className="btn-row" style={{ marginTop: '0.6rem' }}>
+              <button
+                className="btn small"
+                disabled={busy === `confirm:${notice.confirmFamily}`}
+                onClick={() => confirmSend(notice.confirmFamily, false)}
+              >
+                {busy === `confirm:${notice.confirmFamily}` ? 'Checking Sent Items…' : "I've sent it — check Sent Items"}
+              </button>
+              {notice.allowForce ? (
+                <button
+                  className="btn danger small"
+                  onClick={() => {
+                    if (window.confirm('Record this as sent without confirming it in Sent Items?')) {
+                      confirmSend(notice.confirmFamily, true);
+                    }
+                  }}
+                >
+                  Record anyway
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </Callout>
       ) : null}
 
@@ -216,7 +279,9 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
               blockers={familyInfo?.blockers ?? []}
               canSend={validation?.canSend && !busy && (familyInfo?.blockers?.length ?? 0) === 0}
               busy={busy === `send:${family}`}
-              onSend={(force) => send(family, force)}
+              onSend={(opts) => send(family, opts)}
+              transport={validation?.smtp?.transport}
+              autoSendDefault={validation?.smtp?.autoSend}
             />
           );
         })
@@ -266,8 +331,11 @@ function FileCard({
   busy,
   onSend,
   uploadOnly,
+  transport,
+  autoSendDefault,
 }) {
   const [showBytes, setShowBytes] = React.useState(false);
+  const outlook = transport === 'outlook-web';
 
   return (
     <div className="card">
@@ -319,7 +387,7 @@ function FileCard({
                           `${artifact.filename} was already sent to ${alreadySent.to}. Sending it again to the same mailbox is a double load. Continue?`
                         )
                       ) {
-                        onSend(true);
+                        onSend({ force: true });
                       }
                     }}
                   >
@@ -327,9 +395,35 @@ function FileCard({
                   </button>
                 </>
               ) : (
-                <button className="btn small" disabled={!canSend || busy} onClick={() => onSend(false)}>
-                  {busy ? 'Sending…' : 'Send'}
-                </button>
+                <>
+                  <button
+                    className="btn small"
+                    disabled={!canSend || busy}
+                    onClick={() => onSend({ autoSend: false })}
+                    title={outlook ? 'Fills the Outlook compose window and stops for you to review' : undefined}
+                  >
+                    {busy ? 'Working…' : outlook ? 'Compose in Outlook' : 'Send'}
+                  </button>
+                  {outlook ? (
+                    <button
+                      className="btn danger small"
+                      disabled={!canSend || busy}
+                      title="Fill the compose window and press Send without review"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Compose AND send ${artifact.filename} to ${to} without reviewing it first?\n\n` +
+                              'This is a real device load. Only do this once you have seen the composed message look right at least once.'
+                          )
+                        ) {
+                          onSend({ autoSend: true });
+                        }
+                      }}
+                    >
+                      Compose &amp; send
+                    </button>
+                  ) : null}
+                </>
               )}
             </>
           ) : null}

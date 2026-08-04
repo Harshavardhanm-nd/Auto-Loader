@@ -100,6 +100,10 @@ export function getSmtpConfig() {
   return loadEnvironments().smtp;
 }
 
+export function getMailConfig() {
+  return loadEnvironments().mail ?? { transport: 'smtp', autoSend: false };
+}
+
 /** All template descriptors, including any still awaiting a real format. */
 export function loadTemplates() {
   return fs

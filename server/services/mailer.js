@@ -12,7 +12,13 @@
  */
 
 import nodemailer from 'nodemailer';
-import { getSmtpConfig } from '../lib/config.js';
+import { getSmtpConfig, getMailConfig } from '../lib/config.js';
+import {
+  composeAndSend,
+  describeOutlook,
+  authenticateInteractively,
+  validateStoredSession,
+} from './outlook-web-service.js';
 
 /** envName -> { user, pass, from } */
 const credentials = new Map();
@@ -30,14 +36,81 @@ export function clearSmtpCredentials(envName) {
 export function describeSmtp(envName) {
   const cred = credentials.get(envName);
   const cfg = getSmtpConfig();
-  return {
-    configured: Boolean(cred),
-    user: cred?.user ?? null,
-    from: cred?.from ?? null,
+  const mail = getMailConfig();
+  const transport = mail.transport ?? 'smtp';
+
+  const base = {
+    transport,
+    autoSend: Boolean(mail.autoSend),
     host: cfg.host,
     port: cfg.port,
     sentItemsCheckEnabled: Boolean(cfg.sentItemsCheck?.enabled),
   };
+
+  if (transport === 'outlook-web') {
+    const outlook = describeOutlook();
+    return {
+      ...base,
+      // Outlook needs no credentials from this app: a saved storage state holds the session.
+      configured: outlook.signedIn,
+      needsCredentials: false,
+      user: null,
+      from: null,
+      outlook,
+    };
+  }
+
+  return {
+    ...base,
+    configured: Boolean(cred),
+    needsCredentials: true,
+    user: cred?.user ?? null,
+    from: cred?.from ?? null,
+  };
+}
+
+/**
+ * Dispatch a send to whichever transport is configured.
+ *
+ * @param {string} envName
+ * @param {object} message  { to, subject, body, attachment: { filename, content, path } }
+ * @param {object} [options] { autoSend } — overrides the config default per call.
+ */
+export async function deliver(envName, message, options = {}) {
+  const mail = getMailConfig();
+  const transport = mail.transport ?? 'smtp';
+
+  if (transport === 'outlook-web') {
+    if (!message.attachment?.path) {
+      throw new Error(
+        'The Outlook transport attaches the file from disk, so the send needs its path. ' +
+          'This is a bug in the caller, not a configuration problem.'
+      );
+    }
+    const result = await composeAndSend(
+      {
+        to: message.to,
+        subject: message.subject,
+        body: message.body,
+        attachmentPath: message.attachment.path,
+      },
+      { autoSend: options.autoSend ?? Boolean(mail.autoSend) }
+    );
+    return { transport, ...result };
+  }
+
+  const result = await sendMail(envName, message);
+  return { transport, sent: true, composed: true, awaitingYourSend: false, ...result };
+}
+
+/** One-time interactive Outlook sign-in, saving the session for later headless sends. */
+export async function signInToOutlook() {
+  return authenticateInteractively();
+}
+
+/** Prove the saved Outlook session still works. */
+export async function verifyOutlook() {
+  return validateStoredSession();
 }
 
 function transportFor(envName) {

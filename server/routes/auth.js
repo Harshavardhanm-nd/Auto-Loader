@@ -6,15 +6,20 @@ import {
   cancelLogin,
   describeSession,
   clearSession,
+  clearBrowserProfile,
   saveSessionManually,
 } from '../services/sf-session.js';
 import { verifyConnection } from '../services/sf-client.js';
+import { refreshSessionSilently } from '../services/sf-session.js';
 import {
   setSmtpCredentials,
   clearSmtpCredentials,
   describeSmtp,
   verifySmtp,
+  signInToOutlook,
+  verifyOutlook,
 } from '../services/mailer.js';
+import { clearStoredSession, closeOutlook } from '../services/outlook-web-service.js';
 import { getEnvironment, loadEnvironments, loadOperations, unconfiguredValues } from '../lib/config.js';
 
 export const authRouter = express.Router();
@@ -75,6 +80,8 @@ authRouter.get('/environments', (req, res) => {
         verified: env.verified,
         sandboxName: env.salesforce.sandboxName,
         instanceUrl: env.salesforce.instanceUrl,
+        loginUrl: env.salesforce.loginUrl,
+        ssoLabel: env.salesforce.ssoLabel ?? null,
         apiVersion: env.salesforce.apiVersion,
         // Flattened for display: one row per operation that sends mail, plus any
         // family-specific override, so the Connect screen can show exactly where this
@@ -115,15 +122,36 @@ authRouter.post('/logout', (req, res) => {
   const env = req.body?.env || 'testing';
   clearSession(env);
   clearSmtpCredentials(env);
+  // The remembered browser profile is kept unless asked for explicitly — dropping it means the
+  // next login gets a fresh MFA challenge.
+  if (req.body?.forgetBrowser) clearBrowserProfile(env);
   res.json({ ok: true, session: describeSession(env) });
+});
+
+/** Re-mint the sid from the remembered profile without any prompting. */
+authRouter.post('/session/refresh', async (req, res, next) => {
+  try {
+    const env = req.body?.env || 'testing';
+    const result = await refreshSessionSilently(env);
+    res.json({ ...result, session: describeSession(env) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Forget "remember this device", so the next login re-challenges for MFA. */
+authRouter.post('/forget-browser', (req, res) => {
+  const env = req.body?.env || 'testing';
+  clearBrowserProfile(env);
+  res.json({ ...describeSession(env) });
 });
 
 // --- Salesforce browser login with MFA relay ------------------------------
 
 authRouter.post('/login', async (req, res, next) => {
   try {
-    const { env = 'testing', username, password, headless } = req.body ?? {};
-    const attempt = await startLogin({ env, username, password, headless });
+    const { env = 'testing', method = 'password', username, password, headless } = req.body ?? {};
+    const attempt = await startLogin({ env, method, username, password, headless });
     res.json(attempt);
   } catch (err) {
     next(err);
@@ -173,6 +201,42 @@ authRouter.post('/smtp', async (req, res, next) => {
     setSmtpCredentials(env, { user, pass, from });
     const result = verify ? await verifySmtp(env) : { ok: null, skipped: true };
     res.json({ ...result, smtp: describeSmtp(env) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Outlook on the web ---------------------------------------------------
+
+/**
+ * One-time interactive sign-in. Opens a visible Outlook window; you sign in with your Netradyne
+ * account and the resulting session is saved so later sends run headless. Nothing is typed for
+ * you — the provider is Microsoft Entra and this app does not handle those credentials.
+ */
+authRouter.post('/outlook/signin', async (req, res, next) => {
+  try {
+    const env = req.body?.env || 'testing';
+    const result = await signInToOutlook();
+    res.json({ ...result, smtp: describeSmtp(env) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post('/outlook/verify', async (req, res, next) => {
+  try {
+    res.json(await verifyOutlook());
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post('/outlook/forget', async (req, res, next) => {
+  try {
+    const env = req.body?.env || 'testing';
+    await closeOutlook();
+    clearStoredSession();
+    res.json({ ...describeSmtp(env) });
   } catch (err) {
     next(err);
   }

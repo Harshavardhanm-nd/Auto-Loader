@@ -19,7 +19,8 @@ import {
   fetchAssetsByTrackingId,
 } from '../services/sf-client.js';
 import { readSession } from '../services/sf-session.js';
-import { sendMail, buildEml, describeSmtp } from '../services/mailer.js';
+import { deliver, buildEml, describeSmtp } from '../services/mailer.js';
+import { checkSentItems, closeOutlook } from '../services/outlook-web-service.js';
 import { startPolling, stopPolling, pollOnce, isPolling } from '../services/poller.js';
 import {
   validateArtifact,
@@ -494,7 +495,13 @@ runsRouter.get('/:runId/validate', async (req, res, next) => {
     const alreadySent = Object.values(run.sends ?? {}).some((s) => s?.ok);
     groups.org = [validateIdsFree({ takenIds: taken, checked, alreadySent })];
 
-    for (const group of run.groups) {
+    // A family-independent operation has one artifact for the whole run, keyed to the shared
+    // family, so it is validated once rather than per group.
+    const targets = isSharedOperation(operation)
+      ? [{ family: SHARED_FAMILY, familyLabel: 'Any family', fields: run.sharedFields ?? {}, lines: [] }]
+      : run.groups;
+
+    for (const group of targets) {
       const key = artifactKey(operation, group.family);
       if (!run.artifacts?.[key]) continue;
 
@@ -588,26 +595,48 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
       );
     }
 
-    const result = await sendMail(run.env, {
-      to: dl.to,
-      subject: dl.subject,
-      body: dl.body,
-      attachment: { filename: artifact.filename, content: artifact.buffer },
-    });
+    const result = await deliver(
+      run.env,
+      {
+        to: dl.to,
+        subject: dl.subject,
+        body: dl.body,
+        // The Outlook transport attaches from disk; SMTP uses the buffer. Both are provided.
+        attachment: { filename: artifact.filename, content: artifact.buffer, path: artifact.path },
+      },
+      req.body?.autoSend === undefined ? {} : { autoSend: Boolean(req.body.autoSend) }
+    );
+
+    // Compose-and-stop is not a send. Recording it as one would let the duplicate-send guard
+    // block the real send that has not happened yet, and would show the run as complete.
+    if (result.awaitingYourSend) {
+      appendEvent(run.runId, 'mail.composed', `${operation}/${family} → ${dl.to} (awaiting your Send)`);
+      res.json({
+        composedOnly: true,
+        transport: result.transport,
+        to: dl.to,
+        subject: dl.subject,
+        filename: artifact.filename,
+        checks: result.checks,
+        message: result.message,
+      });
+      return;
+    }
 
     const updated = updateRun(run.runId, (r) => {
       r.sends[key] = {
         ok: true,
         operation,
         family,
+        transport: result.transport,
         to: dl.to,
         subject: dl.subject,
         dlSource: `${dl.source}["${dl.key}"]`,
         filename: artifact.filename,
         rowCount: artifact.rowCount,
-        messageId: result.messageId,
-        smtpResponse: result.response,
-        sentItems: result.sentItems,
+        messageId: result.messageId ?? null,
+        smtpResponse: result.response ?? null,
+        sentItems: result.sentItems ?? null,
         sentAt: new Date().toISOString(),
       };
       r.status = 'sent';
@@ -625,6 +654,77 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
           ? null
           : result.sentItems?.reason ?? 'Sent Items could not be confirmed.',
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Record a send you completed by hand in the compose window.
+ *
+ * It is not taken on trust: Sent Items is checked first, and the send is only recorded if the
+ * message is actually there. Otherwise the run would claim a load that never happened, and the
+ * polling screen would sit waiting for assets that are never coming.
+ */
+runsRouter.post('/:runId/send/confirm', async (req, res, next) => {
+  try {
+    const run = getRun(req.params.runId);
+    const { operation, family, force = false } = req.body ?? {};
+
+    const dl = resolveDistributionList(run.env, family, operation);
+    if (!dl) throw new Error(`"${operation}" does not send mail.`);
+
+    const key = artifactKey(operation, family);
+    const artifact = loadArtifact(run.runId, key);
+
+    const sentItems = await checkSentItems({ subject: dl.subject });
+
+    if (sentItems.confirmed !== true && !force) {
+      res.json({
+        recorded: false,
+        sentItems,
+        message:
+          sentItems.confirmed === false
+            ? `"${dl.subject}" is not in Sent Items, so this has not been recorded as sent. ` +
+              'Press Send in the compose window first, or force it if you know it went.'
+            : `Sent Items could not be checked (${sentItems.reason}). Nothing recorded — force it ` +
+              'only if you have confirmed the message in Outlook yourself.',
+      });
+      return;
+    }
+
+    const updated = updateRun(run.runId, (r) => {
+      r.sends[key] = {
+        ok: true,
+        operation,
+        family,
+        transport: 'outlook-web',
+        to: dl.to,
+        subject: dl.subject,
+        dlSource: `${dl.source}["${dl.key}"]`,
+        filename: artifact.filename,
+        rowCount: artifact.rowCount,
+        sentItems,
+        sentByHand: true,
+        forced: sentItems.confirmed !== true,
+        sentAt: new Date().toISOString(),
+      };
+      r.status = 'sent';
+      return r;
+    });
+    appendEvent(run.runId, 'mail.sent', `${operation}/${family} → ${dl.to} (sent by hand)`);
+
+    res.json({ recorded: true, send: updated.sends[key], run: summariseRun(updated) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Discard a compose window left open from a compose-and-stop that was abandoned. */
+runsRouter.post('/:runId/mail/close', async (req, res, next) => {
+  try {
+    getRun(req.params.runId);
+    res.json(await closeOutlook());
   } catch (err) {
     next(err);
   }
