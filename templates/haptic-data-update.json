@@ -1,0 +1,118 @@
+{
+  "id": "haptic-data-update",
+  "label": "Haptic — Data Update",
+  "family": "haptic",
+  "familyLabel": "Haptic",
+  "kind": "accessory",
+  "operation": "dataUpdate",
+  "status": "verified",
+  "sourceTemplate": "Haptic_Data_Update.csv",
+  "bytes": {
+    "bom": true,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "Haptic_Data_Update.csv",
+  "series": {
+    "serial_number": {
+      "type": "numeric",
+      "digits": 6,
+      "sampleStart": "123900"
+    }
+  },
+  "defaults": {
+    "product_type": "Haptic",
+    "sku_number": "ACCAM1HAPTICMDL",
+    "hardware_version": "NA",
+    "software_version": "3.1",
+    "device_region": "IN",
+    "system_pn": "001-10-00009",
+    "device_category": "NAMZ",
+    "shipment_vendor": "CHR",
+    "batch_number": "Batch 02",
+    "manufacturing_partner": "VVDN",
+    "manufacturing_date": "2026-05-20",
+    "shipment_to_3pl": "SanDiego",
+    "invoice_number": "NA",
+    "po_number": "NA",
+    "shipment_tracking_id": "NA"
+  },
+  "columns": [
+    {
+      "name": "Serial number",
+      "source": "generated.serial_number",
+      "required": true
+    },
+    {
+      "name": "Product Type",
+      "source": "field.product_type"
+    },
+    {
+      "name": "sku_number",
+      "source": "field.sku_number"
+    },
+    {
+      "name": "Hardware version",
+      "source": "field.hardware_version"
+    },
+    {
+      "name": "Software Version",
+      "source": "field.software_version"
+    },
+    {
+      "name": "Device Region",
+      "source": "field.device_region"
+    },
+    {
+      "name": "System PN",
+      "source": "field.system_pn"
+    },
+    {
+      "name": "Device Category",
+      "source": "field.device_category"
+    },
+    {
+      "name": "Shipment Tracking ID",
+      "source": "field.shipment_tracking_id"
+    },
+    {
+      "name": "Shipment Vendor",
+      "source": "field.shipment_vendor"
+    },
+    {
+      "name": "Batch Number",
+      "source": "field.batch_number"
+    },
+    {
+      "name": "manufacturing_partner",
+      "source": "field.manufacturing_partner"
+    },
+    {
+      "name": "Manufacturing_Date",
+      "source": "field.manufacturing_date"
+    },
+    {
+      "name": "shipment_to_3pl",
+      "source": "field.shipment_to_3pl"
+    },
+    {
+      "name": "invoice_number",
+      "source": "field.invoice_number"
+    },
+    {
+      "name": "po_number",
+      "source": "field.po_number"
+    },
+    {
+      "name": "D2C_Sales_Order#",
+      "source": "empty"
+    },
+    {
+      "name": "D2C_shipped_date_(YYYY-MM-DD)",
+      "source": "today"
+    }
+  ],
+  "notes": [
+    "The source sheet ends with a row of bare commas — an empty Excel row. That artifact is not reproduced."
+  ]
+}

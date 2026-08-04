@@ -1,0 +1,114 @@
+{
+  "id": "dhub-initial-load",
+  "label": "Driveri Hub — Initial Load",
+  "family": "dhub",
+  "familyLabel": "Driveri Hub (DHUBX)",
+  "kind": "accessory",
+  "operation": "initialLoad",
+  "status": "verified",
+  "sourceTemplate": "DHUB_Initial_Load_RTS120011.csv",
+  "bytes": {
+    "bom": true,
+    "lineEnding": "\r\n",
+    "trailingNewline": true
+  },
+  "filenamePattern": "DHUB_Initial_Load_{trackingId}.csv",
+  "series": {
+    "driveri_hub_id": {
+      "type": "numeric",
+      "digits": 10,
+      "sampleStart": "4011301001"
+    }
+  },
+  "defaults": {
+    "device_region": "US",
+    "sku_number": "DHUBX",
+    "model_number": "NDDVR-300",
+    "tv_system_value": "NTSC",
+    "shipment_vendor": "CHR",
+    "firmware_version": "S21120701.13519",
+    "manufactured_date": "2025-04-01",
+    "device_category": "NAMZ",
+    "manufacturing_partner": "VVDN",
+    "shipment_to_3pl": "DCL",
+    "invoice_number": "Inv001",
+    "po_number": "NA",
+    "d2c_sales_order": "NA"
+  },
+  "columns": [
+    {
+      "name": "driveri_hub_id(required)",
+      "source": "generated.driveri_hub_id",
+      "required": true
+    },
+    {
+      "name": "device_region(required)",
+      "source": "field.device_region",
+      "required": true
+    },
+    {
+      "name": "sku_number",
+      "source": "field.sku_number"
+    },
+    {
+      "name": "model_number",
+      "source": "field.model_number"
+    },
+    {
+      "name": "sdcard_size (in KB)",
+      "source": "empty"
+    },
+    {
+      "name": "tv_system_value(required)",
+      "source": "field.tv_system_value",
+      "required": true
+    },
+    {
+      "name": "shipment_tracking_id(required)",
+      "source": "trackingId",
+      "required": true
+    },
+    {
+      "name": "shipment_vendor",
+      "source": "field.shipment_vendor"
+    },
+    {
+      "name": "firmware_version",
+      "source": "field.firmware_version"
+    },
+    {
+      "name": "manufactured_date (YYYY-MM-DD)(required)",
+      "source": "field.manufactured_date",
+      "required": true
+    },
+    {
+      "name": "device_category(required)",
+      "source": "field.device_category",
+      "required": true
+    },
+    {
+      "name": "manufacturing_partner",
+      "source": "field.manufacturing_partner"
+    },
+    {
+      "name": "shipment_to_3pl",
+      "source": "field.shipment_to_3pl"
+    },
+    {
+      "name": "invoice_number",
+      "source": "field.invoice_number"
+    },
+    {
+      "name": "po_number",
+      "source": "field.po_number"
+    },
+    {
+      "name": "D2C_Sales_Order#",
+      "source": "field.d2c_sales_order"
+    },
+    {
+      "name": "D2C_shipped_date_(YYYY-MM-DD)",
+      "source": "today"
+    }
+  ]
+}

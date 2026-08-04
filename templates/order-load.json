@@ -1,0 +1,37 @@
+{
+  "id": "order-load",
+  "label": "Wizard upload — SKU / Serial_Number",
+  "family": "shared",
+  "familyLabel": "Any family",
+  "kind": "wizard-upload",
+  "operation": "wizardUpload",
+  "status": "verified",
+  "sourceTemplate": "order_load.csv",
+  "bytes": {
+    "bom": false,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "order_load.csv",
+  "series": {},
+  "defaults": {},
+  "rowCountRule": "equals-serialized-order-quantity",
+  "columns": [
+    {
+      "name": "SKU",
+      "source": "line.sku",
+      "required": true,
+      "noSpaces": true
+    },
+    {
+      "name": "Serial_Number",
+      "source": "existing.device_id",
+      "required": true,
+      "integerOnly": true
+    }
+  ],
+  "reusesExistingDevices": true,
+  "notes": [
+    "The real order_load.csv has NO BOM, which contradicts the process spec's claim that this format requires one. The spec's own hex dump was of a different file. Both variants exist in the template folder (partner_order_load.csv does carry a BOM), so the BOM is evidently not what the Apex parser gates on — most likely it just reflects whether the file was last saved by Excel."
+  ]
+}

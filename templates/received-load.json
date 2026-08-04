@@ -1,0 +1,56 @@
+{
+  "id": "received-load",
+  "label": "Received at 3PL — any family",
+  "family": "shared",
+  "familyLabel": "Any family",
+  "kind": "operation",
+  "operation": "received",
+  "status": "verified",
+  "sourceTemplate": "Received Load NDA110043.csv",
+  "alsoSeenAs": [
+    "Haptic_Received.csv",
+    "Received Octo Load NAZ110001.csv"
+  ],
+  "bytes": {
+    "bom": true,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "Received Load {trackingId}.csv",
+  "series": {},
+  "defaults": {
+    "shipment_to_3pl": "DCL",
+    "device_category": "NAMZ"
+  },
+  "columns": [
+    {
+      "name": "device_id(required)",
+      "source": "existing.device_id",
+      "required": true
+    },
+    {
+      "name": "Date Received(YYYY-MM-DD)",
+      "source": "today"
+    },
+    {
+      "name": "Tracking#",
+      "source": "trackingId"
+    },
+    {
+      "name": "shipment_to_3pl(required)",
+      "source": "field.shipment_to_3pl",
+      "required": true
+    },
+    {
+      "name": "device_category(required)",
+      "source": "field.device_category",
+      "required": true
+    }
+  ],
+  "reusesExistingDevices": true,
+  "notes": [
+    "One template, three source files: the Haptic, Octo and Driveri received sheets have an identical 5-column header, so this is family-independent.",
+    "device_id here refers to devices that already exist from a previous load, so this template consumes the ids of a prior run rather than generating new ones.",
+    "The source sheets disagree on the date format for Date Received (2024-11-22 vs 28-03-2025). This follows the column name and writes YYYY-MM-DD."
+  ]
+}

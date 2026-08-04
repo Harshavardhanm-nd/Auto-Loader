@@ -1,0 +1,35 @@
+{
+  "id": "partner-order-load",
+  "label": "Wizard upload — Device_Type / Serial_Number",
+  "family": "shared",
+  "familyLabel": "Any family",
+  "kind": "wizard-upload",
+  "operation": "wizardUpload",
+  "status": "verified",
+  "sourceTemplate": "partner_order_load.csv",
+  "bytes": {
+    "bom": true,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "partner_order_load.csv",
+  "series": {},
+  "defaults": {
+    "device_type": "Driveri"
+  },
+  "rowCountRule": "equals-serialized-order-quantity",
+  "columns": [
+    {
+      "name": "Device_Type",
+      "source": "field.device_type",
+      "required": true
+    },
+    {
+      "name": "Serial_Number",
+      "source": "existing.device_id",
+      "required": true,
+      "integerOnly": true
+    }
+  ],
+  "reusesExistingDevices": true
+}

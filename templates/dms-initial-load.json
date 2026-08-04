@@ -1,0 +1,109 @@
+{
+  "id": "dms-initial-load",
+  "label": "DMS Camera — Initial Load",
+  "family": "dms",
+  "familyLabel": "DMS Camera",
+  "kind": "accessory",
+  "operation": "initialLoad",
+  "status": "verified",
+  "sourceTemplate": "DMS_IntialLoad RTS120014.csv",
+  "bytes": {
+    "bom": true,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "DMS_IntialLoad {trackingId}.csv",
+  "series": {
+    "serial_number": {
+      "type": "numeric",
+      "digits": 9,
+      "sampleStart": "110001401"
+    }
+  },
+  "defaults": {
+    "product_type": "DMS",
+    "sku_number": "ACCCM1DMSCAM",
+    "hardware_version": "S21120701.13519",
+    "software_version": "test_v2",
+    "device_region": "UK",
+    "system_pn": "703-1-05723",
+    "device_category": "NAMZ",
+    "shipment_vendor": "CHR",
+    "batch_number": "batch.00292",
+    "manufacturing_partner": "VVDN",
+    "shipment_to_3pl": "DCL",
+    "invoice_number": "Inv001",
+    "po_number": "NA"
+  },
+  "columns": [
+    {
+      "name": "Serial number",
+      "source": "generated.serial_number",
+      "required": true
+    },
+    {
+      "name": "Product Type",
+      "source": "field.product_type"
+    },
+    {
+      "name": "sku_number",
+      "source": "field.sku_number"
+    },
+    {
+      "name": "Hardware version",
+      "source": "field.hardware_version"
+    },
+    {
+      "name": "Software Version",
+      "source": "field.software_version"
+    },
+    {
+      "name": "Device Region",
+      "source": "field.device_region"
+    },
+    {
+      "name": "System PN",
+      "source": "field.system_pn"
+    },
+    {
+      "name": "Device Category",
+      "source": "field.device_category"
+    },
+    {
+      "name": "Shipment Tracking ID",
+      "source": "trackingId"
+    },
+    {
+      "name": "Shipment Vendor",
+      "source": "field.shipment_vendor"
+    },
+    {
+      "name": "Batch Number",
+      "source": "field.batch_number"
+    },
+    {
+      "name": "manufacturing_partner",
+      "source": "field.manufacturing_partner"
+    },
+    {
+      "name": "shipment_to_3pl",
+      "source": "field.shipment_to_3pl"
+    },
+    {
+      "name": "invoice_number",
+      "source": "field.invoice_number"
+    },
+    {
+      "name": "po_number",
+      "source": "field.po_number"
+    },
+    {
+      "name": "D2C_Sales_Order#",
+      "source": "empty"
+    },
+    {
+      "name": "D2C_shipped_date_(YYYY-MM-DD)",
+      "source": "today"
+    }
+  ]
+}

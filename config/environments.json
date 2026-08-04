@@ -1,0 +1,115 @@
+{
+  "$comment": [
+    "Per-environment Salesforce endpoint and the distribution lists that drive each pipeline.",
+    "",
+    "The destination mailbox is the ONLY thing that selects the operation — the CSV bytes for",
+    "an initial load and a shipment update are identical. So a wrong address is a silent no-op",
+    "or a double load, and every send is matched on the mailbox's LOCAL PART before it goes.",
+    "",
+    "Resolution order for a (family, operation) pair:",
+    "  1. byFamilyOperation['<family>:<operation>']   — a family that has its own mailbox",
+    "  2. byOperation['<operation>']                  — the shared mailbox for that operation",
+    "",
+    "Any value still carrying the REPLACE_ME sentinel blocks sending for that pipeline, so an",
+    "unconfirmed address is safe to leave in place rather than a hazard.",
+    "",
+    "Verified: byOperation.initialLoad and byOperation.shipmentUpdate for testing, from the",
+    "process spec. Everything else is UNCONFIRMED — see README."
+  ],
+  "operations": {
+    "initialLoad": { "label": "Initial load", "needsMail": true },
+    "shipmentUpdate": { "label": "Shipment update", "needsMail": true },
+    "dataUpdate": { "label": "Data update", "needsMail": true },
+    "received": { "label": "Received at 3PL", "needsMail": true },
+    "wizardUpload": { "label": "Wizard upload", "needsMail": false }
+  },
+  "environments": {
+    "testing": {
+      "label": "Testing",
+      "verified": true,
+      "salesforce": {
+        "loginUrl": "https://test.salesforce.com",
+        "instanceUrl": "https://netradyne--testing.sandbox.my.salesforce.com",
+        "apiVersion": "v61.0",
+        "sandboxName": "netradyne--testing"
+      },
+      "distributionLists": {
+        "byOperation": {
+          "initialLoad": {
+            "to": "Asset-Shipped-From-MFR-Testing@netradyne.com",
+            "subject": "Initial Load File",
+            "body": "Please find the attached updated Initial Load CSV."
+          },
+          "shipmentUpdate": {
+            "to": "Asset_Shipment_Update_Testing@netradyne.com",
+            "subject": "Shipment Update",
+            "body": "Please find the attached Initial Load CSV for shipment update processing."
+          },
+          "dataUpdate": {
+            "to": "REPLACE_ME_Asset_Data_Update_Testing@netradyne.com",
+            "subject": "Data Update",
+            "body": "Please find the attached Data Update CSV."
+          },
+          "received": {
+            "to": "REPLACE_ME_Asset_Received_At_3PL_Testing@netradyne.com",
+            "subject": "Device Received",
+            "body": "Please find the attached Received CSV."
+          }
+        },
+        "byFamilyOperation": {
+          "$comment": "Add an entry here only for a family that does NOT use the shared mailbox for that operation, e.g. \"vbus:initialLoad\": { \"to\": \"...\" }."
+        }
+      }
+    },
+    "staging": {
+      "label": "Staging",
+      "verified": false,
+      "salesforce": {
+        "loginUrl": "https://test.salesforce.com",
+        "instanceUrl": "REPLACE_ME_https://netradyne--staging.sandbox.my.salesforce.com",
+        "apiVersion": "v61.0",
+        "sandboxName": "REPLACE_ME_netradyne--staging"
+      },
+      "distributionLists": {
+        "byOperation": {
+          "initialLoad": {
+            "to": "REPLACE_ME_Asset-Shipped-From-MFR-Staging@netradyne.com",
+            "subject": "Initial Load File",
+            "body": "Please find the attached updated Initial Load CSV."
+          },
+          "shipmentUpdate": {
+            "to": "REPLACE_ME_Asset_Shipment_Update_Staging@netradyne.com",
+            "subject": "Shipment Update",
+            "body": "Please find the attached Initial Load CSV for shipment update processing."
+          },
+          "dataUpdate": {
+            "to": "REPLACE_ME_Asset_Data_Update_Staging@netradyne.com",
+            "subject": "Data Update",
+            "body": "Please find the attached Data Update CSV."
+          },
+          "received": {
+            "to": "REPLACE_ME_Asset_Received_At_3PL_Staging@netradyne.com",
+            "subject": "Device Received",
+            "body": "Please find the attached Received CSV."
+          }
+        },
+        "byFamilyOperation": {}
+      }
+    }
+  },
+  "smtp": {
+    "$comment": "Host/port only. Username and password are entered in the UI per session.",
+    "host": "smtp.office365.com",
+    "port": 587,
+    "secure": false,
+    "requireTLS": true,
+    "sentItemsCheck": {
+      "$comment": "IMAP is used only to confirm the message reached Sent Items.",
+      "enabled": true,
+      "host": "outlook.office365.com",
+      "port": 993,
+      "secure": true,
+      "sentMailbox": "Sent Items"
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "$comment": [
+    "Named presets for the 12 Const + Pick columns of Format A (spec section 3).",
+    "These are constant across every run in the testing sandbox, so the UI keeps them",
+    "behind an 'advanced' disclosure instead of asking every time."
+  ],
+  "default": "us-namz-akela",
+  "profiles": [
+    {
+      "id": "us-namz-akela",
+      "label": "US / NAMZ / AKELA",
+      "fields": {
+        "product_type": "AKELA",
+        "model_number": "D-450",
+        "device_region": "US",
+        "device_category": "NAMZ",
+        "service_provider": "TMOIOTSS",
+        "system_pn": "901-1-02282",
+        "shipment_vendor": "CHR",
+        "batch_number": "Batch 03",
+        "manufacturing_partner": "VVDN",
+        "shipment_to_3pl": "DCL",
+        "invoice_number": "INV010101",
+        "po_number": "POUS724"
+      }
+    }
+  ],
+  "picklists": {
+    "$comment": "Active values from the Asset object describe, verified 2026-08-04. The app re-reads these live when connected and falls back to this list offline.",
+    "product_type": [
+      "AKELA",
+      "BAGHEERA",
+      "AKELA_INDIA",
+      "BAGHEERA_INDIA",
+      "BAGHEERA_RND",
+      "KRAIT",
+      "KRAIT_INDIA",
+      "BAGHEERA2",
+      "KRAIT2",
+      "KRAIT_GLOBAL",
+      "KRAIT2_GLOBAL",
+      "BAGHEERA3_GLOBAL",
+      "BAGHEERA2_GLOBAL",
+      "MOWGLI"
+    ],
+    "device_category": [
+      "NAMZ",
+      "AMZ",
+      "US Relay Program"
+    ]
+  },
+  "orderStatus": {
+    "$comment": "Spec section 9 traps 1 and 2. 'Confirmed' and bare 'Shipped' do not exist in this org.",
+    "completeStatuses": ["Activated"],
+    "acceptOnReadOnly": ["Ordered", "Delivered"],
+    "neverWrite": ["Confirmed", "Shipped", "Ordered", "Delivered"],
+    "blockedStatuses": ["Partially Shipped"]
+  }
+}

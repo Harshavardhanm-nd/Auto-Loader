@@ -1,0 +1,117 @@
+{
+  "id": "vbus-initial-load",
+  "label": "VBUS — Initial Load",
+  "family": "vbus",
+  "familyLabel": "VBUS",
+  "kind": "accessory",
+  "operation": "initialLoad",
+  "status": "verified",
+  "sourceTemplate": "VBUS_Initial_Load RTS120013.csv",
+  "bytes": {
+    "bom": true,
+    "lineEnding": "\r\n",
+    "trailingNewline": true
+  },
+  "filenamePattern": "VBUS_Initial_Load {trackingId}.csv",
+  "series": {
+    "serial_number": {
+      "type": "numeric",
+      "digits": 10,
+      "sampleStart": "1100401221"
+    },
+    "mac_id": {
+      "type": "numeric",
+      "digits": 10,
+      "sampleStart": "1100928221"
+    }
+  },
+  "defaults": {
+    "hardware_version": "SA234.1234",
+    "software_version": "test_v1",
+    "device_region": "US",
+    "sku_number": "VDI2L001",
+    "shipment_vendor": "CHR",
+    "system_pn": "NTSC",
+    "batch_number": "batch.00291",
+    "manufacturing_partner": "VVDN",
+    "shipment_to_3pl": "DCL",
+    "invoice_number": "Inv001",
+    "po_number": "NA",
+    "d2c_sales_order": "NA"
+  },
+  "columns": [
+    {
+      "name": "serialNumber(required)",
+      "source": "generated.serial_number",
+      "required": true
+    },
+    {
+      "name": "macId(required)",
+      "source": "generated.mac_id",
+      "required": true
+    },
+    {
+      "name": "hardwareVersion(required)",
+      "source": "field.hardware_version",
+      "required": true
+    },
+    {
+      "name": "softwareVersion(required)",
+      "source": "field.software_version",
+      "required": true
+    },
+    {
+      "name": "deviceRegion(required)",
+      "source": "field.device_region",
+      "required": true
+    },
+    {
+      "name": "sku_number",
+      "source": "field.sku_number"
+    },
+    {
+      "name": "shipmentTrackingId(required)",
+      "source": "trackingId",
+      "required": true
+    },
+    {
+      "name": "shipmentVendor(required)",
+      "source": "field.shipment_vendor",
+      "required": true
+    },
+    {
+      "name": "systemPn(required)",
+      "source": "field.system_pn",
+      "required": true
+    },
+    {
+      "name": "batchNumber(required)",
+      "source": "field.batch_number",
+      "required": true
+    },
+    {
+      "name": "manufacturing_partner",
+      "source": "field.manufacturing_partner"
+    },
+    {
+      "name": "shipment_to_3pl",
+      "source": "field.shipment_to_3pl"
+    },
+    {
+      "name": "invoice_number",
+      "source": "field.invoice_number"
+    },
+    {
+      "name": "po_number",
+      "source": "field.po_number"
+    },
+    {
+      "name": "D2C_Sales_Order#",
+      "source": "field.d2c_sales_order"
+    },
+    {
+      "name": "D2C_shipped_date_(YYYY-MM-DD)",
+      "source": "today"
+    }
+  ]
+}

@@ -1,0 +1,169 @@
+{
+  "id": "driveri-shipment-update",
+  "label": "Driveri / Bagheera3 — Shipment Update",
+  "family": "driveri",
+  "familyLabel": "Driveri (Bagheera3)",
+  "kind": "device",
+  "operation": "shipmentUpdate",
+  "status": "verified",
+  "sourceTemplate": "Shipment Update Load_B3E110005.csv",
+  "bytes": {
+    "bom": false,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "Shipment Update Load_{trackingId}.csv",
+  "series": {
+    "device_id": {
+      "type": "numeric",
+      "digits": 11,
+      "sampleStart": "22513162190"
+    },
+    "sim_serial": {
+      "type": "numeric",
+      "digits": 11,
+      "sampleStart": "22600378200"
+    },
+    "device_imei": {
+      "type": "numeric",
+      "digits": 11,
+      "sampleStart": "22600478210"
+    }
+  },
+  "defaults": {
+    "product_type": "Bagheera3",
+    "sku_number": "K2I132USASI10Y4S",
+    "model_number": "D-215",
+    "device_region": "US",
+    "shipment_vendor": "CHR",
+    "batch_number": "Batch 03",
+    "service_provider": "TMOIOTSS",
+    "system_pn": "901-1-02282",
+    "device_category": "NAMZ",
+    "manufacturing_partner": "VVDN",
+    "shipment_to_3pl": "DCL",
+    "invoice_number": "INV010101",
+    "po_number": "POUS724"
+  },
+  "columns": [
+    {
+      "name": "device_id(required)",
+      "source": "generated.device_id",
+      "required": true
+    },
+    {
+      "name": "product_type(required)",
+      "source": "field.product_type",
+      "required": true
+    },
+    {
+      "name": "sku_number",
+      "source": "field.sku_number"
+    },
+    {
+      "name": "model_number",
+      "source": "field.model_number"
+    },
+    {
+      "name": "sim_serial",
+      "source": "generated.sim_serial"
+    },
+    {
+      "name": "device_imei",
+      "source": "generated.device_imei"
+    },
+    {
+      "name": "sdcard_serial",
+      "source": "empty"
+    },
+    {
+      "name": "sdcard_size",
+      "source": "empty"
+    },
+    {
+      "name": "wifi_mac",
+      "source": "empty"
+    },
+    {
+      "name": "hw_version",
+      "source": "empty"
+    },
+    {
+      "name": "os_version",
+      "source": "empty"
+    },
+    {
+      "name": "ota_version",
+      "source": "empty"
+    },
+    {
+      "name": "owner_username",
+      "source": "empty"
+    },
+    {
+      "name": "device_region(required)",
+      "source": "field.device_region",
+      "required": true
+    },
+    {
+      "name": "registration_key",
+      "source": "empty"
+    },
+    {
+      "name": "shipment_tracking_id(required)",
+      "source": "trackingId",
+      "required": true
+    },
+    {
+      "name": "shipment_vendor",
+      "source": "field.shipment_vendor"
+    },
+    {
+      "name": "batch_number",
+      "source": "field.batch_number"
+    },
+    {
+      "name": "bt_mac",
+      "source": "empty"
+    },
+    {
+      "name": "service_provider(required)",
+      "source": "field.service_provider",
+      "required": true
+    },
+    {
+      "name": "system_pn(required)",
+      "source": "field.system_pn",
+      "required": true
+    },
+    {
+      "name": "device_category(required)",
+      "source": "field.device_category",
+      "required": true
+    },
+    {
+      "name": "manufacturing_partner",
+      "source": "field.manufacturing_partner"
+    },
+    {
+      "name": "shipment_to_3pl",
+      "source": "field.shipment_to_3pl"
+    },
+    {
+      "name": "invoice_number",
+      "source": "field.invoice_number"
+    },
+    {
+      "name": "po_number",
+      "source": "field.po_number"
+    },
+    {
+      "name": "D2C_Sales_Order#",
+      "source": "empty"
+    },
+    {
+      "name": "D2C_shipped_date_(YYYY-MM-DD)",
+      "source": "today"
+    }
+  ]
+}
