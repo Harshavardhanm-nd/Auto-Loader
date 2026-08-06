@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Field, Stat } from '../components/ui.jsx';
+import { Badge, Callout, Field, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * What this run is: which operation, which tracking id, and optionally which order.
@@ -37,77 +37,76 @@ export default function SetupPage({ env, setup, setSetup, goto, onError }) {
 
   return (
     <>
-      <div className="page-head">
-        <h1>Setup</h1>
+      <PageHead eyebrow="Step 02 · Run identity" title="Setup">
         <p>
           Pick the operation and the tracking id this run is for. The tracking id goes into the
           CSV and into the filename, so it is required even when no order is involved.
         </p>
-      </div>
+      </PageHead>
 
-      <div className="card">
-        <h2>Operation</h2>
-        <p className="muted small">
+      <Sheet eyebrow="Decides template and mailbox" title="Operation">
+        <p className="prose small">
           The destination mailbox is the only thing that tells the parser which operation you
           mean — the CSV bytes are the same. Choosing here decides which template and which
           mailbox get used.
         </p>
-        <div className="btn-row" style={{ marginTop: '0.75rem' }}>
-          {mailOperations.map((op) => (
-            <button
-              key={op.id}
-              className={`btn ${operation === op.id ? '' : 'secondary'} small`}
-              onClick={() => setSetup((s) => ({ ...s, operation: op.id }))}
-            >
-              {op.label}
-            </button>
-          ))}
-        </div>
-      </div>
+        <Segmented
+          label="Operation"
+          value={operation}
+          onChange={(id) => setSetup((s) => ({ ...s, operation: id }))}
+          options={mailOperations.map((op) => ({ value: op.id, label: op.label }))}
+        />
+      </Sheet>
 
-      <div className="card">
-        <h2>Tracking id</h2>
-        <div className="card-row">
-          <div style={{ flex: '0 0 240px' }}>
-            <Field label="shipment_tracking_id" hint="e.g. B3E110005, RTS120011, or NA">
+      <Sheet eyebrow="Goes into the CSV and the filename" title="Tracking id">
+        <div style={{ maxWidth: '26rem' }}>
+          <Field label="shipment_tracking_id" raw hint="e.g. B3E110005, RTS120011, or NA">
+            <div className="input-row">
               <input
                 className="mono"
                 type="text"
+                style={{ flex: '1 1 auto' }}
                 value={setup.trackingId ?? ''}
                 placeholder="B3E110005"
                 onChange={(e) => setSetup((s) => ({ ...s, trackingId: e.target.value.trim() }))}
               />
-            </Field>
-          </div>
-          {setup.order ? (
-            <button
-              className="btn secondary small"
-              onClick={() => setSetup((s) => ({ ...s, trackingId: s.order.orderNumber }))}
-            >
-              Use order number
-            </button>
-          ) : null}
+              {setup.order ? (
+                <button
+                  className="btn secondary small"
+                  onClick={() => setSetup((s) => ({ ...s, trackingId: s.order.orderNumber }))}
+                >
+                  Use order number
+                </button>
+              ) : null}
+            </div>
+          </Field>
         </div>
-        <p className="muted small" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+        <p className="prose small" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
           Some families put <code>NA</code> in this column at initial load and only carry a real
           value at shipment update — the Haptic and Octo sheets both do. The filename still uses
           whatever you enter here.
         </p>
-      </div>
+      </Sheet>
 
-      <div className="card">
-        <div className="card-row">
-          <h2 style={{ margin: 0 }}>
+      <Sheet
+        eyebrow="Only for a wizard upload"
+        title={
+          <>
             Order <Badge tone="muted">optional</Badge>
-          </h2>
-          <div className="spacer" />
-          {setup.order ? (
-            <button className="btn secondary small" onClick={() => setSetup((s) => ({ ...s, order: null, orderNumber: '' }))}>
+          </>
+        }
+        actions={
+          setup.order ? (
+            <button
+              className="btn secondary small"
+              onClick={() => setSetup((s) => ({ ...s, order: null, orderNumber: '' }))}
+            >
               Clear
             </button>
-          ) : null}
-        </div>
-        <p className="muted small">
+          ) : null
+        }
+      >
+        <p className="prose small">
           Only needed if this run has to produce a wizard upload matching an order's serialized
           quantity. Skip it for a plain manufacturer batch.
         </p>
@@ -139,11 +138,11 @@ export default function SetupPage({ env, setup, setSetup, goto, onError }) {
         {setup.order ? <OrderDetail order={setup.order} /> : null}
 
         {!setup.order && recent?.length ? (
-          <details style={{ marginTop: '0.75rem' }}>
-            <summary className="muted small" style={{ cursor: 'pointer' }}>
+          <details style={{ marginTop: '0.9rem' }}>
+            <summary className="eyebrow" style={{ cursor: 'pointer' }}>
               Recent orders
             </summary>
-            <div className="table-wrap" style={{ marginTop: '0.5rem' }}>
+            <div className="table-wrap" style={{ marginTop: '0.6rem' }}>
               <table>
                 <thead>
                   <tr>
@@ -173,7 +172,7 @@ export default function SetupPage({ env, setup, setSetup, goto, onError }) {
             </div>
           </details>
         ) : null}
-      </div>
+      </Sheet>
 
       {families ? <MailboxSummary families={families} operation={operation} /> : null}
 
@@ -195,7 +194,7 @@ function OrderDetail({ order }) {
         </Callout>
       ) : null}
 
-      <div className="stat-row" style={{ margin: '1rem 0' }}>
+      <div className="stat-row" style={{ margin: '1.1rem 0' }}>
         <Stat value={order.serializedLines.length} label="Serialized lines" />
         <Stat value={order.requiredSerialTotal} label="Serials the order needs" />
         <Stat value={order.lines.length - order.serializedLines.length} label="Non-serialized" />
@@ -250,8 +249,7 @@ function MailboxSummary({ families, operation }) {
   const notReady = rows.filter((r) => !r.ready);
 
   return (
-    <div className="card">
-      <h3>Where this operation sends</h3>
+    <Sheet eyebrow="Routing" title="Where this operation sends">
       <div className="table-wrap">
         <table>
           <thead>
@@ -275,13 +273,13 @@ function MailboxSummary({ families, operation }) {
         </table>
       </div>
       {notReady.length ? (
-        <p className="small" style={{ color: 'var(--warn)', marginTop: '0.6rem', marginBottom: 0 }}>
+        <p className="small" style={{ color: 'var(--warn)', marginTop: '0.7rem', marginBottom: 0 }}>
           {notReady.length} pipeline(s) still have placeholder addresses in{' '}
           <code>config/environments.json</code>. You can generate and download their files, but
           sending is blocked.
         </p>
       ) : null}
-    </div>
+    </Sheet>
   );
 }
 

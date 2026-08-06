@@ -1,0 +1,357 @@
+{
+  "$comment": [
+    "Device Life Cycle Management (DLCM) — the stage graph a device walks through, from the",
+    "DLCM flow chart. This file is the single source of truth for: which stage a device is in,",
+    "which transitions are legal, which of them THIS APP can drive (by emailing a CSV) and which",
+    "belong to somebody else (the Installer App, the customer, the order integration).",
+    "",
+    "`stageField` is the Asset field that carries the stage. It is a numeric code, -2..14; the",
+    "chart draws -2..12, so 13 and 14 exist in the org but are not modelled here — an unmapped",
+    "code is reported as unmapped rather than guessed at.",
+    "",
+    "Anything marked `uncertain` was read off the chart where the arrow's endpoint was ambiguous.",
+    "Each one is surfaced in the UI so it can be confirmed and corrected here in one line."
+  ],
+
+  "stageField": "IDMS_Status__c",
+
+  "accounts": {
+    "installCheck": { "label": "Install Check account", "tone": "ok" },
+    "customer": { "label": "Customer account", "tone": "warn" }
+  },
+
+  "stages": [
+    {
+      "code": -2,
+      "id": "preProduction",
+      "label": "Pre-Production",
+      "account": "installCheck",
+      "note": "Where an initial load lands. The device exists as an Asset but has not been QA'd out to the vendor yet.",
+      "layout": { "col": 0, "row": 1 }
+    },
+    {
+      "code": -1,
+      "id": "shippedFromVendor",
+      "label": "Shipped From Vendor",
+      "account": "installCheck",
+      "note": "In transit from the manufacturer. A shipment update put it here.",
+      "layout": { "col": 1, "row": 1 }
+    },
+    {
+      "code": 1,
+      "id": "new",
+      "label": "New",
+      "account": "installCheck",
+      "note": "Received into stock and sellable.",
+      "layout": { "col": 2, "row": 1 }
+    },
+    {
+      "code": 2,
+      "id": "shippedActive",
+      "label": "Shipped Active",
+      "account": "customer",
+      "note": "With the customer, sim active, not yet in a vehicle.",
+      "layout": { "col": 3, "row": 1 }
+    },
+    {
+      "code": 3,
+      "id": "shippedSpare",
+      "label": "Shipped Spare",
+      "account": "customer",
+      "note": "With the customer as a spare — shipped with an inactive sim.",
+      "layout": { "col": 3, "row": 0 }
+    },
+    {
+      "code": 4,
+      "id": "installed",
+      "label": "Installed",
+      "account": "customer",
+      "note": "Fitted in a vehicle. The Installer App puts it here, not this app.",
+      "layout": { "col": 3, "row": 2 }
+    },
+    {
+      "code": 10,
+      "id": "rmaPending",
+      "label": "RMA Pending",
+      "account": "customer",
+      "note": "Faulty and in warranty. Waiting for the customer to submit the RMA form.",
+      "layout": { "col": 1, "row": 3 }
+    },
+    {
+      "code": 5,
+      "id": "rmaInitiated",
+      "label": "RMA Initiated",
+      "account": "customer",
+      "note": "RMA form submitted; the device is on its way back.",
+      "layout": { "col": 1, "row": 4 }
+    },
+    {
+      "code": 7,
+      "id": "returnedRma",
+      "label": "Returned RMA",
+      "account": "installCheck",
+      "note": "Back with Netradyne under warranty. From here it is refurbished or marked dead.",
+      "layout": { "col": 1, "row": 5 }
+    },
+    {
+      "code": 11,
+      "id": "nonRmaPending",
+      "label": "Non-RMA Pending",
+      "account": "customer",
+      "note": "Out of warranty or contract expired. A return has not been raised yet.",
+      "layout": { "col": 3, "row": 3 }
+    },
+    {
+      "code": 6,
+      "id": "returnInitiatedNonRma",
+      "label": "Return Initiated Non-RMA",
+      "account": "customer",
+      "note": "Non-warranty return in progress.",
+      "layout": { "col": 3, "row": 4 }
+    },
+    {
+      "code": 8,
+      "id": "returnedNonRma",
+      "label": "Returned Non-RMA",
+      "account": "installCheck",
+      "note": "Back with Netradyne outside warranty.",
+      "layout": { "col": 3, "row": 5 }
+    },
+    {
+      "code": 12,
+      "id": "nfOow",
+      "label": "NF OOW",
+      "account": "customer",
+      "note": "Not functional, out of warranty. Can be reverted to functional, returned, or killed.",
+      "layout": { "col": 4, "row": 3 }
+    },
+    {
+      "code": 9,
+      "id": "dead",
+      "label": "Dead",
+      "account": "installCheck",
+      "terminal": true,
+      "note": "End of life. Only Undo mark dead brings it back.",
+      "layout": { "col": 2, "row": 6 }
+    }
+  ],
+
+  "transitions": [
+    {
+      "from": null,
+      "to": -2,
+      "label": "Initial Load",
+      "driver": { "kind": "operation", "operation": "initialLoad" }
+    },
+    {
+      "from": -2,
+      "to": -1,
+      "label": "Shipment Load",
+      "driver": { "kind": "operation", "operation": "shipmentUpdate" }
+    },
+    {
+      "from": -1,
+      "to": -2,
+      "label": "Move to QA Failed",
+      "driver": { "kind": "external", "actor": "QA" },
+      "route": "above"
+    },
+    {
+      "from": -1,
+      "to": 1,
+      "label": "Received at 3PL",
+      "driver": { "kind": "operation", "operation": "received" },
+      "uncertain": "The chart leaves this arrow unlabelled. Mapped to the Received at 3PL operation because that is the step described as following a shipment update, and DEVICE_RECEIVED_AT_3PL is the matching sync status."
+    },
+    {
+      "from": -1,
+      "to": 2,
+      "label": "New Order Integration",
+      "driver": { "kind": "external", "actor": "Order integration" },
+      "route": "below",
+      "note": "Skips New entirely — the order integration ships straight to the customer."
+    },
+    {
+      "from": 1,
+      "to": 2,
+      "label": "Shipped to customer, sim active",
+      "driver": { "kind": "external", "actor": "Fulfilment" }
+    },
+    {
+      "from": 1,
+      "to": 3,
+      "label": "Shipped To Customer with Inactive Sim",
+      "driver": { "kind": "external", "actor": "Fulfilment" }
+    },
+    {
+      "from": 3,
+      "to": 2,
+      "label": "Sim Activated",
+      "driver": { "kind": "external", "actor": "Network" }
+    },
+    {
+      "from": 2,
+      "to": 4,
+      "label": "Device installed in vehicle, triggered from Installer App",
+      "driver": { "kind": "external", "actor": "Installer App" }
+    },
+    {
+      "from": 4,
+      "to": 2,
+      "label": "Device removed from Vehicle by Customer",
+      "driver": { "kind": "external", "actor": "Customer" },
+      "route": "left"
+    },
+    {
+      "from": 4,
+      "to": 10,
+      "label": "Issue with Device, device is in warranty",
+      "driver": { "kind": "external", "actor": "Support" }
+    },
+    {
+      "from": 4,
+      "to": 11,
+      "label": "Contract Expired",
+      "driver": { "kind": "external", "actor": "Contract" }
+    },
+    {
+      "from": 4,
+      "to": 12,
+      "label": "Issue with Device, device is out of warranty",
+      "driver": { "kind": "external", "actor": "Support" }
+    },
+    {
+      "from": 12,
+      "to": 11,
+      "label": "Return raised out of warranty",
+      "driver": { "kind": "external", "actor": "Support" }
+    },
+    {
+      "from": 12,
+      "to": 2,
+      "label": "Revert back to Functional — associated to a placeholder vehicle",
+      "driver": { "kind": "external", "actor": "Support" },
+      "route": "channelRight",
+      "enter": "right"
+    },
+    {
+      "from": 12,
+      "to": 4,
+      "label": "Revert back to Functional — associated to a real vehicle",
+      "driver": { "kind": "external", "actor": "Support" },
+      "route": "channelRight",
+      "enter": "right"
+    },
+    {
+      "from": 12,
+      "to": 9,
+      "label": "Move To Dead",
+      "driver": { "kind": "operation", "operation": "deviceDead" },
+      "route": "channelRight",
+      "enter": "right"
+    },
+    {
+      "from": 10,
+      "to": 5,
+      "label": "Customer submits RMA Form",
+      "driver": { "kind": "external", "actor": "Customer" }
+    },
+    {
+      "from": 5,
+      "to": 7,
+      "label": "Received by Netradyne",
+      "driver": { "kind": "external", "actor": "Netradyne receiving" },
+      "uncertain": "Kept external rather than mapped to Received at 3PL: the only received template in the repo is titled \"Received at 3PL\", and a warranty return arriving at Netradyne may well be a different sheet."
+    },
+    {
+      "from": 11,
+      "to": 6,
+      "label": "Return initiated",
+      "driver": { "kind": "external", "actor": "Support" }
+    },
+    {
+      "from": 6,
+      "to": 8,
+      "label": "Received by Netradyne",
+      "driver": { "kind": "external", "actor": "Netradyne receiving" },
+      "uncertain": "Same as the RMA leg — external until the sheet for it is confirmed."
+    },
+    {
+      "from": 7,
+      "to": 9,
+      "label": "Move To Dead",
+      "driver": { "kind": "operation", "operation": "deviceDead" }
+    },
+    {
+      "from": 8,
+      "to": 9,
+      "label": "Move To Dead",
+      "driver": { "kind": "operation", "operation": "deviceDead" }
+    },
+    {
+      "from": 7,
+      "to": -1,
+      "label": "Refurbish Device",
+      "driver": { "kind": "external", "actor": "Refurbishment" },
+      "route": "channelLeft",
+      "enter": "bottom",
+      "uncertain": "Read off the chart as returning to Shipped From Vendor. No refurbish operation exists in this app, so nothing here depends on it."
+    },
+    {
+      "from": 8,
+      "to": -1,
+      "label": "Refurbish Device",
+      "driver": { "kind": "external", "actor": "Refurbishment" },
+      "route": "channelLeft",
+      "enter": "bottom",
+      "uncertain": "Same arrow as the RMA leg."
+    },
+    {
+      "from": 9,
+      "to": 1,
+      "label": "Undo Dead Device",
+      "driver": { "kind": "operation", "operation": "undoDead" },
+      "uncertain": "Read off the chart as returning to New. The arrow also grazes Shipped Active; New is the reading that matches the operation's name and the sellable-stock meaning of stage 1."
+    }
+  ],
+
+  "operationRoles": {
+    "$comment": [
+      "Operations that do not move a device between stages, and operations the chart does not",
+      "cover. Everything else is derived from `transitions` above — an operation named there",
+      "moves the device, and that is what drives the next-step suggestion."
+    ],
+    "updateLoad": {
+      "stagePreserving": true,
+      "note": "Corrects data on a device that is already loaded. Does not move it."
+    },
+    "dataUpdate": {
+      "stagePreserving": true,
+      "note": "Warranty / data correction. Does not move it."
+    },
+    "nonRepairable": {
+      "unmapped": true,
+      "note": "No arrow on the chart. Likely one of codes 13–14, which the chart does not draw."
+    },
+    "faultyReturned": {
+      "unmapped": true,
+      "note": "No arrow on the chart. Likely one of codes 13–14, which the chart does not draw."
+    },
+    "wizardUpload": {
+      "unmapped": true,
+      "note": "Not emailed and not a stage change — it attaches serials to an order."
+    }
+  },
+
+  "syncStatus": {
+    "$comment": [
+      "Sync_Status__c base per operation, from the process spec's picklist. Polling appends",
+      "_SYNC_SUCCESS / _SYNC_FAILED. An operation absent here cannot be watched converge, and",
+      "the UI says so instead of polling for a status that will never appear."
+    ],
+    "initialLoad": "INITIAL_DEVICE_LOAD",
+    "shipmentUpdate": "SHIPMENT_UPDATE",
+    "received": "DEVICE_RECEIVED_AT_3PL",
+    "dataUpdate": "DATA_UPDATE"
+  }
+}

@@ -14,7 +14,13 @@ import {
   refreshSessionSilently,
 } from './sf-session.js';
 import { decodeSku, scoreSkuMatch } from './sku-decoder.js';
-import { loadProfiles } from '../lib/config.js';
+import { loadProfiles, loadOperations } from '../lib/config.js';
+import {
+  loadLifecycle,
+  classifyStage,
+  operationMovement,
+  summariseStages,
+} from '../lib/lifecycle.js';
 
 export class SalesforceNotConnectedError extends Error {
   constructor(env) {
@@ -410,20 +416,31 @@ export function classifySyncStatus(syncStatus) {
   return { phase: 'in-progress', terminal: false, failed: false, base: value };
 }
 
-export const STAGE_EXPECTATIONS = {
-  initialLoad: {
-    label: 'Initial load',
-    pending: 'INITIAL_DEVICE_LOAD',
-    success: 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS',
-    failed: 'INITIAL_DEVICE_LOAD_SYNC_FAILED',
-  },
-  shipmentUpdate: {
-    label: 'Shipment update',
-    pending: 'SHIPMENT_UPDATE',
-    success: 'SHIPMENT_UPDATE_SYNC_SUCCESS',
-    failed: 'SHIPMENT_UPDATE_SYNC_FAILED',
-  },
-};
+/**
+ * What to watch for, per operation, derived from the life cycle's own `syncStatus` map.
+ *
+ * Derived rather than listed so that adding a pollable operation is one line in
+ * `config/lifecycle.json` and not a second place to keep in step. An operation with no known
+ * base cannot be polled at all — it is absent here, `summarisePolling` refuses it by name, and
+ * the UI says so instead of waiting for a status that will never be written.
+ */
+export const STAGE_EXPECTATIONS = Object.fromEntries(
+  Object.entries(loadLifecycle().syncStatus).map(([operation, base]) => {
+    const movement = operationMovement(operation);
+    return [
+      operation,
+      {
+        label: loadOperations()[operation]?.label ?? operation,
+        pending: base,
+        success: `${base}_SYNC_SUCCESS`,
+        failed: `${base}_SYNC_FAILED`,
+        // Where a device lands once this operation succeeds, so the poller can report movement
+        // rather than just a status string.
+        movesTo: movement?.to?.[0] ?? null,
+      },
+    ];
+  })
+);
 
 /**
  * Roll a set of assets up against the stage we are waiting for.
@@ -438,7 +455,15 @@ export function summarisePolling(stage, deviceIds, assets) {
   const rows = deviceIds.map((deviceId) => {
     const asset = byDeviceId.get(String(deviceId));
     if (!asset) {
-      return { deviceId, present: false, syncStatus: null, phase: 'absent', terminal: false, failed: false };
+      return {
+        deviceId,
+        present: false,
+        syncStatus: null,
+        phase: 'absent',
+        terminal: false,
+        failed: false,
+        stage: classifyStage(null),
+      };
     }
     const reached = asset.syncStatus === expectation.success;
     const failedHere = asset.syncStatus === expectation.failed;
@@ -451,6 +476,9 @@ export function summarisePolling(stage, deviceIds, assets) {
       assetStatus: asset.assetStatus,
       cpqOrderNumber: asset.cpqOrderNumber,
       phase: asset.phase,
+      // The numeric IDMS code placed on the DLCM chart. A device can be at the expected sync
+      // status and still not have moved stage yet, so the two are reported separately.
+      stage: classifyStage(asset.idmsStatus),
       // A device that has moved past this stage (e.g. already SHIPMENT_UPDATE_SYNC_SUCCESS
       // when we are watching the initial load) counts as done, not stuck.
       terminal: asset.terminal,
@@ -480,5 +508,7 @@ export function summarisePolling(stage, deviceIds, assets) {
     anyFailed: failed.length > 0,
     loadedDeviceIds: succeeded.map((r) => r.deviceId),
     failedDeviceIds: failed.map((r) => r.deviceId),
+    // Where the devices actually are on the DLCM chart, which is what decides the next step.
+    stages: summariseStages(rows.map((r) => r.idmsStatus ?? null)),
   };
 }

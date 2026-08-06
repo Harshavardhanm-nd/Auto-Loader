@@ -1,9 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Auto Loader — device &amp; accessory initial load</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#EFFAFD" />
+    <title>Auto Loader — device &amp; accessory loads</title>
+
+    <!-- Plus Jakarta Sans carries display and UI; IBM Plex Mono is kept strictly for data,
+         because device ids, byte counts and hex dumps have to align. Both fall back to system
+         faces if the network is out. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    />
+
+    <!-- An isometric container: the unit this whole app moves. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23EFFAFD'/%3E%3Cpath d='M16 4 27 10.3 16 16.6 5 10.3z' fill='%23B9D5F4'/%3E%3Cpath d='M5 10.3 16 16.6 16 29 5 22.7z' fill='%234A8BDF'/%3E%3Cpath d='M27 10.3 27 22.7 16 29 16 16.6z' fill='%23A0006D'/%3E%3C/svg%3E"
+    />
   </head>
   <body>
     <div id="root"></div>

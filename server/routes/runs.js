@@ -25,12 +25,23 @@ import { startPolling, stopPolling, pollOnce, isPolling } from '../services/poll
 import {
   validateArtifact,
   validateIdsFree,
+  validateDeviceStages,
   validateWizardRowCount,
   validateSerialsShipped,
   validateSendTarget,
   summariseChecks,
   artifactPreview,
 } from '../services/validator.js';
+import {
+  describeLifecycle,
+  summariseStages,
+  nextFrom,
+  operationMovement,
+  operationRole,
+  syncStatusBase,
+  classifyStage,
+  stageByCode,
+} from '../lib/lifecycle.js';
 import {
   getEnvironment,
   getTemplate,
@@ -495,6 +506,24 @@ runsRouter.get('/:runId/validate', async (req, res, next) => {
     const alreadySent = Object.values(run.sends ?? {}).some((s) => s?.ok);
     groups.org = [validateIdsFree({ takenIds: taken, checked, alreadySent })];
 
+    // Life cycle position. Read in the same pass as the collision check, and reported as a
+    // warning — the stage is written by another system, so it can move between this read and
+    // the send, and refusing on it would invent a new way to be stuck.
+    let deviceStages = null;
+    try {
+      const assets = await fetchAssetsByDeviceId(run.env, runDeviceIds(run));
+      const byId = new Map(assets.map((a) => [a.deviceId, a]));
+      deviceStages = runDeviceIds(run).map((deviceId) => ({
+        deviceId,
+        idmsStatus: byId.get(String(deviceId))?.idmsStatus ?? null,
+      }));
+    } catch {
+      deviceStages = null;
+    }
+    groups.org.push(
+      validateDeviceStages({ operation, deviceStages: deviceStages ?? [], checked: Boolean(deviceStages) })
+    );
+
     // A family-independent operation has one artifact for the whole run, keyed to the shared
     // family, so it is validated once rather than per group.
     const targets = isSharedOperation(operation)
@@ -801,6 +830,97 @@ runsRouter.get('/:runId/poll/:stage', (req, res, next) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Life cycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Where this run's devices are on the DLCM chart, and what moves them next.
+ *
+ * The stage is read live from the org rather than inferred from what this app has sent, because
+ * most of the chart is driven by other systems — the Installer App, the customer, the order
+ * integration. What we sent is a poor proxy for where the device is.
+ *
+ * A read failure is not an error here: the answer degrades to "stage unknown, and here is what
+ * this app has sent so far", which is still the useful half.
+ */
+runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
+  try {
+    const run = getRun(req.params.runId);
+    const deviceIds = runDeviceIds(run);
+    const operations = loadOperations();
+
+    let assets = null;
+    let readError = null;
+    try {
+      if (deviceIds.length) assets = await fetchAssetsByDeviceId(run.env, deviceIds);
+    } catch (err) {
+      readError = err.message;
+    }
+
+    const byDeviceId = new Map((assets ?? []).map((a) => [a.deviceId, a]));
+    const raw = [];
+    const devices = deviceIds.map((deviceId) => {
+      const asset = byDeviceId.get(String(deviceId)) ?? null;
+      raw.push(asset?.idmsStatus ?? null);
+      return {
+        deviceId,
+        present: Boolean(asset),
+        stage: classifyStage(asset?.idmsStatus ?? null),
+        syncStatus: asset?.syncStatus ?? null,
+        assetStatus: asset?.assetStatus ?? null,
+        cpqOrderNumber: asset?.cpqOrderNumber ?? null,
+        lastModifiedDate: asset?.lastModifiedDate ?? null,
+      };
+    });
+
+    const stages = summariseStages(raw);
+    const allTemplates = loadTemplates();
+
+    // The next step is only a single answer while every device shares a stage. A split run gets
+    // the stages listed instead of a suggestion, because acting on the majority would leave the
+    // rest behind silently.
+    const position = stages.unanimous;
+    const next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
+
+    res.json({
+      runId: run.runId,
+      env: run.env,
+      read: assets ? 'live' : 'unavailable',
+      readError,
+      deviceCount: deviceIds.length,
+      devices,
+      stages,
+      position: position
+        ? { code: position.code, label: position.label, known: position.known, count: position.count }
+        : null,
+      next: {
+        ...next,
+        // What of `mine` this app can actually send today: an operation still needs a template
+        // and a configured mailbox, and four of them have a mailbox but no sheet yet.
+        mine: next.mine.map((step) => {
+          const rows = isSharedOperation(step.operation)
+            ? [buildRow(SHARED_FAMILY, 'Any family', step.operation, allTemplates, run)]
+            : run.groups.map((g) => buildRow(g.family, g.familyLabel, step.operation, allTemplates, run));
+          return {
+            ...step,
+            operationLabel: operations[step.operation]?.label ?? step.operation,
+            families: rows,
+            sendable: rows.some((r) => r.supported && r.usable && r.blockers.length === 0),
+            alreadySent: rows.length > 0 && rows.every((r) => r.sent),
+            pollable: Boolean(syncStatusBase(step.operation)),
+          };
+        }),
+      },
+      sent: Object.entries(run.sends ?? {})
+        .filter(([, s]) => s?.ok)
+        .map(([key, s]) => ({ key, operation: s.operation, family: s.family, sentAt: s.sentAt })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 runsRouter.get('/:runId/assets', async (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
@@ -914,6 +1034,9 @@ runsRouter.get('/:runId/operations', (req, res, next) => {
           ? [buildRow(SHARED_FAMILY, 'Any family', id, all, run)]
           : run.groups.map((group) => buildRow(group.family, group.familyLabel, id, all, run));
 
+        const movement = operationMovement(id);
+        const role = operationRole(id);
+
         return {
           id,
           label: meta.label,
@@ -921,6 +1044,22 @@ runsRouter.get('/:runId/operations', (req, res, next) => {
           shared,
           families: rows,
           anySupported: rows.some((f) => f.supported),
+          // Where this operation sits on the DLCM chart, so the picker shows a sequence rather
+          // than a flat list of ten unrelated sends.
+          movement: movement
+            ? {
+                from: movement.from,
+                to: movement.to,
+                fromLabels: movement.from.map((f) =>
+                  f === null ? 'no Asset yet' : stageByCode(f)?.label ?? `stage ${f}`
+                ),
+                toLabels: movement.to.map((t) => stageByCode(t)?.label ?? `stage ${t}`),
+                uncertain: movement.uncertain,
+              }
+            : null,
+          stagePreserving: Boolean(role?.stagePreserving),
+          stageNote: role?.note ?? null,
+          pollable: Boolean(syncStatusBase(id)),
         };
       }),
     });

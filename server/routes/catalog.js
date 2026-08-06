@@ -16,6 +16,7 @@ import {
   sendBlockers,
 } from '../lib/config.js';
 import { decodeSku } from '../services/sku-decoder.js';
+import { describeLifecycle } from '../lib/lifecycle.js';
 
 export const catalogRouter = express.Router();
 
@@ -63,6 +64,36 @@ catalogRouter.get('/picklists', async (req, res, next) => {
 catalogRouter.get('/profiles', (req, res) => {
   const { profiles, default: defaultId, orderStatus } = loadProfiles();
   res.json({ default: defaultId, profiles, orderStatus });
+});
+
+/**
+ * The DLCM stage graph, with each operation placed on it.
+ *
+ * Environment-independent — the chart is a property of the device, not of a sandbox — but the
+ * operations carry per-environment send readiness, so `env` is honoured when given.
+ */
+catalogRouter.get('/lifecycle', (req, res, next) => {
+  try {
+    const model = describeLifecycle(loadOperations());
+    const all = loadTemplates();
+
+    res.json({
+      ...model,
+      operations: model.operations.map((op) => {
+        const templates = all.filter((t) => t.operation === op.id);
+        return {
+          ...op,
+          // An operation can be fully modelled and still unsendable: four of them have a
+          // mailbox but no sheet, which is the difference between "next" and "next, by hand".
+          templateCount: templates.length,
+          templates: templates.map((t) => ({ id: t.id, family: t.family, status: t.status })),
+          hasTemplate: templates.length > 0,
+        };
+      }),
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 catalogRouter.get('/templates', (req, res) => {
