@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Stat } from '../components/ui.jsx';
+import { Badge, Callout, KeyValue, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * Family and SKU picker.
@@ -136,14 +136,13 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
 
   return (
     <>
-      <div className="page-head">
-        <h1>Families &amp; SKUs</h1>
+      <PageHead eyebrow="Step 03 · Manifest" title="Families & SKUs">
         <p>
           Each family is its own CSV and its own email. Pick as many as this batch covers —{' '}
           <span className="mono">{operation}</span> for tracking id{' '}
           <span className="mono">{setup.trackingId}</span>.
         </p>
-      </div>
+      </PageHead>
 
       {supported.length === 0 && families ? (
         <Callout tone="warn" title={`No family has a "${operation}" template`}>
@@ -152,85 +151,76 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
         </Callout>
       ) : null}
 
-      <div className="card">
-        <h2>Family</h2>
-        <div className="btn-row" style={{ marginBottom: '0.5rem' }}>
-          {supported.map((f) => {
+      <Sheet eyebrow="One family, one file, one email" title="Family">
+        <Segmented
+          label="Product family"
+          value={activeFamily}
+          onChange={(family) => {
+            setActiveFamily(family);
+            ensureGroup(family);
+          }}
+          options={supported.map((f) => {
             const picked = groups.find((g) => g.family === f.family)?.lines.length ?? 0;
             const op = f.operations.find((o) => o.operation === operation);
-            return (
-              <button
-                key={f.family}
-                className={`btn ${activeFamily === f.family ? '' : 'secondary'} small`}
-                onClick={() => {
-                  setActiveFamily(f.family);
-                  ensureGroup(f.family);
-                }}
-                title={op?.to ?? ''}
-              >
-                {f.label}
-                {picked ? ` · ${picked}` : ''}
-                {op && !op.ready ? ' ⚠' : ''}
-              </button>
-            );
+            return {
+              value: f.family,
+              label: f.label,
+              count: picked || null,
+              flag: Boolean(op && !op.ready),
+              title: op && !op.ready ? 'No mailbox configured for this pipeline yet' : op?.to ?? '',
+            };
           })}
-        </div>
+        />
 
         {activeTemplate ? (
-          <div className="table-wrap">
-            <table>
-              <tbody>
-                <tr>
-                  <th>Template</th>
-                  <td className="small">
+          <div style={{ marginTop: '1rem' }}>
+            <KeyValue
+              rows={[
+                [
+                  'Template',
+                  <span className="small">
                     {activeTemplate.label}{' '}
                     {activeTemplate.usable ? (
                       <Badge tone="ok">verified</Badge>
                     ) : (
                       <Badge tone="warn">{activeTemplate.status}</Badge>
                     )}
-                  </td>
-                </tr>
-                <tr>
-                  <th>Derived from</th>
-                  <td className="mono small">{activeTemplate.sourceTemplate}</td>
-                </tr>
-                <tr>
-                  <th>Shape</th>
-                  <td className="small">
-                    {activeTemplate.columnCount} columns ·{' '}
-                    {activeTemplate.bytes.bom ? 'BOM' : 'no BOM'} ·{' '}
+                  </span>,
+                ],
+                ['Derived from', <span className="mono small">{activeTemplate.sourceTemplate}</span>],
+                [
+                  'Shape',
+                  <span className="small">
+                    {activeTemplate.columnCount} columns · {activeTemplate.bytes.bom ? 'BOM' : 'no BOM'} ·{' '}
                     {activeTemplate.bytes.lineEnding === '\r\n' ? 'CRLF' : 'LF'} ·{' '}
                     {activeTemplate.bytes.trailingNewline ? 'trailing newline' : 'no trailing newline'}
-                  </td>
-                </tr>
-                <tr>
-                  <th>Mints</th>
-                  <td className="mono small">
+                  </span>,
+                ],
+                [
+                  'Mints',
+                  <span className="mono small">
                     {Object.keys(activeTemplate.series).length
                       ? Object.entries(activeTemplate.series)
                           .map(([n, d]) => `${n} (${d.type === 'prefixed' ? d.prefix + 'N' : d.digits + 'd'})`)
                           .join(', ')
                       : 'nothing — acts on ids from an earlier run'}
-                  </td>
-                </tr>
-                <tr>
-                  <th>Filename</th>
-                  <td className="mono small">
+                  </span>,
+                ],
+                [
+                  'Filename',
+                  <span className="mono small">
                     {activeTemplate.filenamePattern.replace('{trackingId}', setup.trackingId ?? '…')}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+                  </span>,
+                ],
+              ]}
+            />
           </div>
         ) : null}
 
         {activeTemplate?.notes?.length ? (
-          <details style={{ marginTop: '0.6rem' }}>
-            <summary className="muted small" style={{ cursor: 'pointer' }}>
-              {activeTemplate.notes.length} note(s) on this template
-            </summary>
-            <ul className="small muted" style={{ marginTop: '0.4rem' }}>
+          <details style={{ marginTop: '0.8rem' }}>
+            <summary className="eyebrow">{activeTemplate.notes.length} note(s) on this template</summary>
+            <ul className="small muted" style={{ marginTop: '0.5rem' }}>
               {activeTemplate.notes.map((n) => (
                 <li key={n} style={{ marginBottom: '0.3rem' }}>
                   {n}
@@ -239,26 +229,26 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
             </ul>
           </details>
         ) : null}
-      </div>
+      </Sheet>
 
       {activeTemplate ? (
-        <div className="card">
-          <div className="card-row" style={{ marginBottom: '0.75rem' }}>
-            <h2 style={{ margin: 0 }}>SKUs for {activeTemplate.familyLabel}</h2>
-            <div className="spacer" />
-            <div style={{ flex: '1 1 240px' }}>
+        <Sheet
+          eyebrow="Catalog"
+          title={`SKUs for ${activeTemplate.familyLabel}`}
+          actions={
+            <div style={{ flex: '1 1 260px', minWidth: '200px' }}>
               <input
                 type="text"
                 value={search}
-                placeholder="search the catalog, or add the template SKU below"
+                placeholder="Search the catalog"
                 onChange={(e) => setSearch(e.target.value)}
                 style={{ width: '100%' }}
               />
             </div>
-          </div>
-
+          }
+        >
           {activeTemplate.defaults?.sku_number ? (
-            <div className="btn-row" style={{ marginBottom: '0.75rem' }}>
+            <div className="btn-row" style={{ marginBottom: '0.85rem' }}>
               <button
                 className="btn small"
                 onClick={() => addLine(activeFamily, activeTemplate.defaults.sku_number, activeTemplate.familyLabel)}
@@ -270,13 +260,13 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
           ) : null}
 
           {catalog === null ? (
-            <p className="muted small">
+            <p className="prose small" style={{ marginBottom: 0 }}>
               Catalog unavailable — connect to Salesforce to search it, or use the template SKU above.
             </p>
           ) : (
             <div className="picker-results">
               {results.length === 0 ? (
-                <p className="muted small" style={{ padding: '0.75rem' }}>
+                <p className="muted small" style={{ padding: '0.85rem', margin: 0 }}>
                   Nothing matches that.
                 </p>
               ) : (
@@ -290,12 +280,12 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
                           {p.productCode} {onOrder ? <Badge tone="info">on order</Badge> : null}
                         </div>
                         <div className="decoded">
-                          {p.decoded?.decoded ? p.decoded.summary : <span className="muted">code not decodable</span>}
+                          {p.decoded?.decoded ? p.decoded.summary : <span className="faint">code not decodable</span>}
                         </div>
                         <div className="name">{p.name}</div>
                       </div>
                       <button
-                        className={`btn ${picked ? 'secondary' : ''} small`}
+                        className="btn secondary small"
                         disabled={picked}
                         onClick={() => addLine(activeFamily, p.productCode, p.name)}
                       >
@@ -307,18 +297,18 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
               )}
             </div>
           )}
-        </div>
+        </Sheet>
       ) : null}
 
       {usableGroups.length ? (
-        <div className="card">
-          <h2>This run</h2>
+        <Sheet eyebrow="Ready to mint" title="This run">
           {usableGroups.map((g) => (
-            <div key={g.family} style={{ marginBottom: '1rem' }}>
-              <h3>
+            <div key={g.family} style={{ marginBottom: '1.15rem' }}>
+              <h3 style={{ marginBottom: '0.5rem' }}>
                 {g.familyLabel}{' '}
-                <span className="muted small">
-                  → one CSV, one email ({templateFor(g.family)?.filenamePattern.replace('{trackingId}', setup.trackingId ?? '…')})
+                <span className="muted small" style={{ fontWeight: 400 }}>
+                  → one CSV, one email (
+                  {templateFor(g.family)?.filenamePattern.replace('{trackingId}', setup.trackingId ?? '…')})
                 </span>
               </h3>
               <div className="table-wrap">
@@ -336,7 +326,7 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
                       <tr key={line.sku}>
                         <td className="mono">{line.sku}</td>
                         <td className="num">
-                          {line.onOrder ? line.quantity : <span className="muted">not on order</span>}
+                          {line.onOrder ? line.quantity : <span className="faint">not on order</span>}
                         </td>
                         <td className="num">
                           <input
@@ -360,7 +350,7 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
                         </td>
                         <td>
                           <button
-                            className="btn secondary small"
+                            className="btn quiet small"
                             onClick={() =>
                               setGroups((current) =>
                                 current.map((cg) =>
@@ -382,7 +372,7 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
             </div>
           ))}
 
-          <div className="stat-row" style={{ marginBottom: '1rem' }}>
+          <div className="stat-row" style={{ marginBottom: '1.1rem' }}>
             <Stat value={usableGroups.length} label="Files / emails" />
             <Stat value={totalUnits} label="Units to load" />
             {setup.order ? (
@@ -401,8 +391,8 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
             <Callout tone="warn" title="Wizard upload will not cover the whole order">
               The order needs {setup.order.requiredSerialTotal} serial(s) but the lines picked
               account for {requiredSerials}. Uploading fewer sets the order to{' '}
-              <strong>Partially Shipped</strong>, which hides the "Load Asset &amp; Ship Order"
-              button and dead-ends the flow.
+              <strong style={{ display: 'inline' }}>Partially Shipped</strong>, which hides the
+              "Load Asset &amp; Ship Order" button and dead-ends the flow.
             </Callout>
           ) : null}
 
@@ -411,7 +401,7 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
               Those files will not be generated or sent until their descriptor is marked verified.
             </Callout>
           ) : null}
-        </div>
+        </Sheet>
       ) : null}
 
       <div className="btn-row">

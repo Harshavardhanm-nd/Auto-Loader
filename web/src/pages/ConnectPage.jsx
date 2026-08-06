@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Field, Spinner } from '../components/ui.jsx';
+import { Badge, Callout, Field, KeyValue, PageHead, Segmented, Sheet, Spinner } from '../components/ui.jsx';
 
 /**
  * Two connections, both credential-in-memory:
@@ -13,14 +13,13 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
   const nextStep = 'setup';
   return (
     <>
-      <div className="page-head">
-        <h1>Connect</h1>
+      <PageHead eyebrow="Step 01 · Sessions" title="Connect">
         <p>
           Nothing here is written to a <code>.env</code> file. Salesforce credentials are used
           once to drive a login and then discarded — only the session id is stored, and only
           until Salesforce expires it. Mail credentials live in memory for this session.
         </p>
-      </div>
+      </PageHead>
 
       {activeEnv && !activeEnv.ready ? (
         <Callout tone="fail" title={`${activeEnv.label} cannot be used yet`}>
@@ -48,9 +47,8 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
       </div>
 
       {activeEnv?.mailboxes?.length ? (
-        <div className="card">
-          <h3>Where this environment sends</h3>
-          <p className="muted small">
+        <Sheet className="section-gap" eyebrow="Routing" title="Where this environment sends">
+          <p className="prose small">
             The destination mailbox is the only thing that distinguishes one operation from
             another — the CSV bytes carry no marker. Every send is matched on the mailbox's local
             part first, because matching the domain alone would accept the wrong mailbox: every
@@ -83,11 +81,11 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
               </tbody>
             </table>
           </div>
-          <p className="muted small" style={{ marginTop: '0.6rem', marginBottom: 0 }}>
+          <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
             A pipeline whose address is still a placeholder can generate and download files, but
             sending it is refused.
           </p>
-        </div>
+        </Sheet>
       ) : null}
 
       {session?.salesforce?.connected ? (
@@ -172,55 +170,39 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
   const inFlight = attempt && !['connected', 'failed', 'cancelled'].includes(attempt.status);
 
   return (
-    <div className="card">
-      <h2>
-        Salesforce{' '}
-        {sf?.connected ? <Badge tone="ok">connected</Badge> : <Badge tone="muted">not connected</Badge>}
-      </h2>
-
+    <Sheet
+      eyebrow="Read-only session"
+      title="Salesforce"
+      live={Boolean(inFlight)}
+      actions={sf?.connected ? <Badge tone="ok">connected</Badge> : <Badge tone="muted">not connected</Badge>}
+    >
       {sf?.connected ? (
         <>
-          <div className="table-wrap" style={{ marginBottom: '0.75rem' }}>
-            <table>
-              <tbody>
-                <tr>
-                  <th>User</th>
-                  <td className="mono">{sf.username ?? '—'}</td>
-                </tr>
-                <tr>
-                  <th>Instance</th>
-                  <td className="mono">{sf.instanceUrl}</td>
-                </tr>
-                <tr>
-                  <th>API</th>
-                  <td className="mono">{sf.apiVersion}</td>
-                </tr>
-                <tr>
-                  <th>When it expires</th>
-                  <td>
-                    {sf.autoRenews ? (
-                      <>
-                        <Badge tone="ok">renews itself</Badge>{' '}
-                        <span className="muted small">no login prompt</span>
-                      </>
-                    ) : (
-                      <Badge tone="warn">will ask you to log in</Badge>
-                    )}
-                  </td>
-                </tr>
-                <tr>
-                  <th>Session age</th>
-                  <td>
-                    {sf.ageMinutes} min
-                    {sf.refreshCount ? (
-                      <span className="muted small"> · renewed {sf.refreshCount}×</span>
-                    ) : null}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div className="btn-row">
+          <KeyValue
+            rows={[
+              ['User', <span className="mono">{sf.username ?? '—'}</span>],
+              ['Instance', <span className="mono break">{sf.instanceUrl}</span>],
+              ['API', <span className="mono">{sf.apiVersion}</span>],
+              [
+                'When it expires',
+                sf.autoRenews ? (
+                  <>
+                    <Badge tone="ok">renews itself</Badge> <span className="muted small">no login prompt</span>
+                  </>
+                ) : (
+                  <Badge tone="warn">will ask you to log in</Badge>
+                ),
+              ],
+              [
+                'Session age',
+                <>
+                  {sf.ageMinutes} min
+                  {sf.refreshCount ? <span className="muted small"> · renewed {sf.refreshCount}×</span> : null}
+                </>,
+              ],
+            ]}
+          />
+          <div className="btn-row" style={{ marginTop: '0.85rem' }}>
             <button
               className="btn secondary small"
               onClick={async () => {
@@ -319,43 +301,41 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
             </Callout>
           ) : null}
 
-          <p className="muted small">
+          <p className="prose small">
             A Chromium window opens on{' '}
-            <span className="mono" style={{ wordBreak: 'break-all' }}>{activeEnv?.loginUrl}</span> —
-            this org's own login page, not the generic sandbox one, which is the only page that
-            offers the SSO button.
+            <span className="mono break">{activeEnv?.loginUrl}</span> — this org's own login page,
+            not the generic sandbox one, which is the only page that offers the SSO button.
             {sf?.rememberedBrowser
               ? ' This browser is already remembered, so MFA may be skipped.'
               : ' After this, the session renews itself and you should not be asked again.'}
           </p>
 
-          <div className="btn-row" style={{ marginBottom: '0.75rem' }}>
-            <button
-              className={`btn ${method === 'password' ? '' : 'secondary'} small`}
-              disabled={inFlight}
-              onClick={() => setMethod('password')}
-            >
-              Username &amp; password
-            </button>
-            <button
-              className={`btn ${method === 'sso' ? '' : 'secondary'} small`}
-              disabled={inFlight}
-              onClick={() => setMethod('sso')}
-              title="Detours through Microsoft Entra — more steps, same result"
-            >
-              {activeEnv?.ssoLabel ?? 'SSO'}
-            </button>
+          <div style={{ margin: '0.9rem 0' }}>
+            <Segmented
+              label="Login method"
+              value={method}
+              onChange={setMethod}
+              options={[
+                { value: 'password', label: 'Username & password', disabled: Boolean(inFlight) },
+                {
+                  value: 'sso',
+                  label: activeEnv?.ssoLabel ?? 'SSO',
+                  disabled: Boolean(inFlight),
+                  title: 'Detours through Microsoft Entra — more steps, same result',
+                },
+              ]}
+            />
           </div>
 
           {method === 'sso' ? (
             <>
-              <p className="muted small">
+              <p className="prose small">
                 The longer route: it clicks the SSO button and follows the redirect out to Microsoft
                 Entra, which is several more steps than signing in to Salesforce directly. Kept for
                 accounts that can only get in this way. Fill in your Netradyne account to have the
                 Microsoft form driven too, or leave it blank to sign in yourself.
               </p>
-              <div style={{ display: 'grid', gap: '0.6rem', marginBottom: '0.75rem' }}>
+              <div className="field-stack">
                 <Field label="Netradyne account" hint="Optional — leave blank to sign in yourself">
                   <input
                     type="text"
@@ -382,12 +362,12 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
             </>
           ) : (
             <>
-              <p className="muted small">
+              <p className="prose small">
                 Driven end to end and stays inside Salesforce — no Microsoft redirect. It stops at
                 one place only: when Salesforce asks to verify your identity, the code box below
                 activates — read the code off your mail or phone and enter it here.
               </p>
-              <div style={{ display: 'grid', gap: '0.6rem', marginBottom: '0.75rem' }}>
+              <div className="field-stack">
                 <Field label="Salesforce username">
                   <input
                     type="text"
@@ -432,7 +412,7 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                 Cancel
               </button>
             ) : null}
-            <button className="btn secondary small" onClick={() => setShowManual((v) => !v)}>
+            <button className="btn quiet small" onClick={() => setShowManual((v) => !v)}>
               Paste a sid instead
             </button>
           </div>
@@ -479,7 +459,7 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                 >
                   <div className="small">{attempt.message}</div>
                   {attempt.currentUrl ? (
-                    <div className="mono small muted" style={{ marginTop: '0.4rem', wordBreak: 'break-all' }}>
+                    <div className="mono small muted break" style={{ marginTop: '0.4rem' }}>
                       {attempt.currentUrl}
                     </div>
                   ) : null}
@@ -532,7 +512,7 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
           ) : null}
         </>
       )}
-    </div>
+    </Sheet>
   );
 }
 
@@ -562,64 +542,58 @@ function SmtpCard({ env, session, refreshSession, onError }) {
   if (smtp?.transport === 'outlook-web') {
     const signedIn = smtp.outlook?.signedIn;
     return (
-      <div className="card">
-        <h2>
-          Mail{' '}
-          {signedIn ? <Badge tone="ok">Outlook signed in</Badge> : <Badge tone="warn">sign-in needed</Badge>}
-        </h2>
-        <p className="muted small">
+      <Sheet
+        eyebrow="The only way the org changes"
+        title="Mail"
+        actions={signedIn ? <Badge tone="ok">Outlook signed in</Badge> : <Badge tone="warn">sign-in needed</Badge>}
+      >
+        <p className="prose small">
           SMTP is unusable in this tenant — it answers <code>535 5.7.139</code>, Microsoft's code for
           SMTP AUTH being switched off. No app password gets past that, so mail goes out through
           Outlook on the web.
         </p>
-        <p className="muted small">
+        <p className="prose small">
           Sign in once in a visible window; the session is saved to{' '}
           <code>data/outlook-auth.json</code> (mode 0600) and later sends run headless against it.
           Nothing is typed for you — the provider is Microsoft Entra and this app does not handle
           those credentials.
         </p>
 
-        <div className="table-wrap" style={{ marginBottom: '0.75rem' }}>
-          <table>
-            <tbody>
-              <tr>
-                <th>Saved session</th>
-                <td>
-                  {signedIn ? (
-                    <>
-                      <Badge tone="ok">present</Badge>{' '}
-                      <span className="muted small">
-                        {smtp.outlook.savedAt ? new Date(smtp.outlook.savedAt).toLocaleString() : ''}
-                      </span>
-                    </>
-                  ) : (
-                    <Badge tone="muted">none</Badge>
-                  )}
-                </td>
-              </tr>
-              <tr>
-                <th>On send</th>
-                <td>
-                  {smtp.autoSend ? (
-                    <Badge tone="warn">composes and sends</Badge>
-                  ) : (
-                    <Badge tone="ok">composes and stops for review</Badge>
-                  )}
-                </td>
-              </tr>
-              {smtp.outlook?.composeOpen ? (
-                <tr>
-                  <th>Compose window</th>
-                  <td className="small">
+        <KeyValue
+          rows={[
+            [
+              'Saved session',
+              signedIn ? (
+                <>
+                  <Badge tone="ok">present</Badge>{' '}
+                  <span className="muted small">
+                    {smtp.outlook.savedAt ? new Date(smtp.outlook.savedAt).toLocaleString() : ''}
+                  </span>
+                </>
+              ) : (
+                <Badge tone="muted">none</Badge>
+              ),
+            ],
+            [
+              'On send',
+              smtp.autoSend ? (
+                <Badge tone="warn">composes and sends</Badge>
+              ) : (
+                <Badge tone="ok">composes and stops for review</Badge>
+              ),
+            ],
+            smtp.outlook?.composeOpen
+              ? [
+                  'Compose window',
+                  <span className="small">
                     open — <span className="mono">{smtp.outlook.composeSubject}</span>
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+                  </span>,
+                ]
+              : null,
+          ]}
+        />
 
-        <div className="btn-row">
+        <div className="btn-row" style={{ marginTop: '0.85rem' }}>
           <button
             className={`btn ${signedIn ? 'secondary' : ''}`}
             disabled={busy}
@@ -674,22 +648,22 @@ function SmtpCard({ env, session, refreshSession, onError }) {
           ) : null}
         </div>
 
-        <p className="muted small" style={{ marginTop: '0.6rem', marginBottom: 0 }}>
+        <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
           A closed compose window looks the same whether the mail was sent or discarded, so a send is
           only recorded once the message is found in Sent Items. Transport and auto-send live in{' '}
           <code>config/environments.json</code> under <code>mail</code>.
         </p>
-      </div>
+      </Sheet>
     );
   }
 
   return (
-    <div className="card">
-      <h2>
-        Mail{' '}
-        {smtp?.configured ? <Badge tone="ok">configured</Badge> : <Badge tone="muted">not configured</Badge>}
-      </h2>
-      <p className="muted small">
+    <Sheet
+      eyebrow="The only way the org changes"
+      title="Mail"
+      actions={smtp?.configured ? <Badge tone="ok">configured</Badge> : <Badge tone="muted">not configured</Badge>}
+    >
+      <p className="prose small">
         Sent over SMTP via <code>{smtp?.host}:{smtp?.port}</code>. After each send the app looks
         for the message in Sent Items — a transport that accepted a message is not proof it
         left the building.
@@ -697,33 +671,27 @@ function SmtpCard({ env, session, refreshSession, onError }) {
 
       {smtp?.configured ? (
         <>
-          <div className="table-wrap" style={{ marginBottom: '0.75rem' }}>
-            <table>
-              <tbody>
-                <tr>
-                  <th>From</th>
-                  <td className="mono">{smtp.from}</td>
-                </tr>
-                <tr>
-                  <th>Sent Items check</th>
-                  <td>{smtp.sentItemsCheckEnabled ? 'enabled' : 'disabled in config'}</td>
-                </tr>
-              </tbody>
-            </table>
+          <KeyValue
+            rows={[
+              ['From', <span className="mono">{smtp.from}</span>],
+              ['Sent Items check', smtp.sentItemsCheckEnabled ? 'enabled' : 'disabled in config'],
+            ]}
+          />
+          <div className="btn-row" style={{ marginTop: '0.85rem' }}>
+            <button
+              className="btn secondary small"
+              onClick={async () => {
+                await api.clearSmtp(env);
+                await refreshSession(env);
+              }}
+            >
+              Clear credentials
+            </button>
           </div>
-          <button
-            className="btn secondary small"
-            onClick={async () => {
-              await api.clearSmtp(env);
-              await refreshSession(env);
-            }}
-          >
-            Clear credentials
-          </button>
         </>
       ) : (
         <>
-          <div style={{ display: 'grid', gap: '0.6rem', marginBottom: '0.75rem' }}>
+          <div className="field-stack">
             <Field label="Mail username">
               <input type="text" autoComplete="off" value={user} onChange={(e) => setUser(e.target.value)} />
             </Field>
@@ -742,6 +710,6 @@ function SmtpCard({ env, session, refreshSession, onError }) {
           </div>
         </>
       )}
-    </div>
+    </Sheet>
   );
 }

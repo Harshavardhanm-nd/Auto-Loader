@@ -19,6 +19,7 @@
  */
 
 import { hasBom, lineEndingStats, hexDump, CRLF } from '../lib/bytes.js';
+import { checkOperationAgainstStages } from '../lib/lifecycle.js';
 import { validateRows, primarySeriesOf } from './id-generator.js';
 
 const OK = 'pass';
@@ -232,6 +233,59 @@ export function validateIdsFree({ takenIds, checked, alreadySent }) {
         FAIL,
         `Already taken: ${takenIds.slice(0, 10).join(', ')}${takenIds.length > 10 ? ` (+${takenIds.length - 10} more)` : ''}`
       );
+}
+
+/**
+ * Are these devices in a stage this operation can act on?
+ *
+ * A **warning**, never a blocker, and deliberately so. `IDMS_Status__c` is written by another
+ * system: a device can move between this read and the send, an initial load acts on devices that
+ * have no Asset yet, and the whole chart is full of transitions other actors drive. Refusing a
+ * send on a stage read would invent a new way to be stuck.
+ *
+ * What it does buy is the mistake that costs a real load: sending a shipment update for devices
+ * that are already past Shipped From Vendor, which the org accepts and which changes nothing.
+ */
+export function validateDeviceStages({ operation, deviceStages, checked }) {
+  const label = 'Devices are in a stage this operation moves';
+
+  if (!checked) {
+    return check(
+      'stage',
+      label,
+      SKIP,
+      'Not connected to Salesforce — the life cycle stage was not read.',
+      'warning'
+    );
+  }
+
+  const result = checkOperationAgainstStages(operation, deviceStages);
+
+  if (!result.applicable) {
+    return check('stage', label, SKIP, result.reason, 'warning');
+  }
+
+  const movement = `${result.fromLabels.join(' / ')} → ${result.toLabels.join(' / ')}`;
+
+  if (result.mismatched.length === 0) {
+    return check('stage', label, OK, `${movement} · ${result.ok.length} device(s) in place`, 'warning');
+  }
+
+  const shown = result.mismatched
+    .slice(0, 8)
+    .map((m) => `${m.deviceId}: ${m.why}`)
+    .join('\n');
+
+  return check(
+    'stage',
+    label,
+    FAIL,
+    `This operation moves ${movement}.\n` +
+      `${result.mismatched.length} of ${deviceStages.length} device(s) are not in a stage it moves:\n${shown}` +
+      (result.mismatched.length > 8 ? `\n(+${result.mismatched.length - 8} more)` : '') +
+      '\nSending anyway is accepted by the org and will not move them.',
+    'warning'
+  );
 }
 
 /** Wizard uploads only: the row count must equal what the order asked for. */

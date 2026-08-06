@@ -1,5 +1,6 @@
 import React from 'react';
 
+/** A stamped mark rather than a pill — status here is a mark on a manifest. */
 export function Badge({ tone = 'muted', children }) {
   return <span className={`badge ${tone}`}>{children}</span>;
 }
@@ -24,20 +25,111 @@ export function Stat({ value, label, tone }) {
   );
 }
 
-export function Field({ label, hint, children }) {
+/** `raw` keeps the label's own case — for a label that is a literal column name. */
+export function Field({ label, hint, raw = false, children }) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span className={raw ? 'group-label' : undefined}>{label}</span>
       {children}
       {hint ? <span className="hint">{hint}</span> : null}
     </label>
   );
 }
 
+/** The docket header every page opens with: step marker, title, double rule. */
+export function PageHead({ eyebrow, title, children }) {
+  return (
+    <div className="page-head">
+      {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
+      <h1>{title}</h1>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A sheet of paper laid on the desk. `title`/`eyebrow`/`actions` render the
+ * ruled head; without them the sheet is a plain panel.
+ */
+export function Sheet({ eyebrow, title, actions, children, className = '', live = false }) {
+  const hasHead = Boolean(eyebrow || title || actions);
+  return (
+    <section className={`sheet ${className}`.trim()}>
+      {hasHead ? (
+        <header className={`sheet-head${live ? ' scanline' : ''}`}>
+          <div className="titles">
+            {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
+            {title ? <h2>{title}</h2> : null}
+          </div>
+          {actions ? <div className="actions">{actions}</div> : null}
+        </header>
+      ) : null}
+      {children}
+    </section>
+  );
+}
+
+/**
+ * One grammar for every "pick one of these" in the app: operation, family,
+ * stage, login method, theme.
+ *
+ * options: [{ value, label, count, flag, done, title, disabled }]
+ *   count — a number shown beside the label (SKUs picked, for instance)
+ *   flag  — an amber dot: usable, but something about it is not configured
+ *   done  — a check: this one has already been through
+ */
+export function Segmented({ options, value, onChange, label, className = '' }) {
+  return (
+    <div className={`segmented ${className}`.trim()} role="group" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          aria-pressed={o.value === value}
+          disabled={o.disabled}
+          title={o.title || undefined}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+          {o.count ? <span className="seg-count">{o.count}</span> : null}
+          {o.done ? <span className="seg-done">✓</span> : null}
+          {o.flag ? <span className="seg-flag" aria-hidden="true" /> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Key/value rows as a printed form. Rows are `[label, value]`; a null value
+ * drops the row, so callers can list every field they might show.
+ */
+export function KeyValue({ rows }) {
+  const visible = rows.filter((r) => r && r[1] !== null && r[1] !== undefined);
+  if (!visible.length) return null;
+  return (
+    <div className="table-wrap">
+      <table>
+        <tbody>
+          {visible.map(([label, value]) => (
+            <tr key={label}>
+              <th scope="row">{label}</th>
+              <td>{value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function ErrorBanner({ error, onDismiss }) {
   if (!error) return null;
   return (
-    <Callout tone="fail" title={error.needsReconnect ? 'Salesforce session needs reconnecting' : 'Something went wrong'}>
+    <Callout
+      tone="fail"
+      title={error.needsReconnect ? 'Salesforce session needs reconnecting' : 'Something went wrong'}
+    >
       <div style={{ whiteSpace: 'pre-wrap' }}>{error.message}</div>
       {onDismiss ? (
         <div className="btn-row" style={{ marginTop: '0.5rem' }}>
@@ -60,8 +152,8 @@ export function SyncStatusBadge({ status }) {
 
 export function Spinner({ label }) {
   return (
-    <span className="muted small">
-      <span className="dot muted pulse" style={{ marginRight: '0.4rem' }} />
+    <span className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}>
+      <span className="dot info pulse" />
       {label}
     </span>
   );

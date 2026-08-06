@@ -60,6 +60,9 @@ export const api = {
   setSmtp: (body) => post('/api/auth/smtp', body),
   clearSmtp: (env) => del(`/api/auth/smtp?${q({ env })}`),
 
+  lifecycle: () => get('/api/catalog/lifecycle'),
+  runLifecycle: (runId) => get(`/api/runs/${runId}/lifecycle`),
+
   families: (env) => get(`/api/catalog/families?${q({ env })}`),
   templates: () => get('/api/catalog/templates'),
   products: (env, params = {}) => get(`/api/catalog/products?${q({ env, ...params })}`),

@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout } from '../components/ui.jsx';
+import { Badge, Callout, PageHead, Segmented, Sheet } from '../components/ui.jsx';
 
 /**
  * Review & send.
@@ -135,52 +135,68 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
 
   return (
     <>
-      <div className="page-head">
-        <h1>Review &amp; send</h1>
+      <PageHead eyebrow="Step 05 · Dispatch" title="Review & send">
         <p>
-          Tracking id <span className="mono">{run.trackingId}</span>
+          One file per family, one email each — every send carries exactly one attachment. Tracking
+          id <span className="mono">{run.trackingId}</span>
           {run.order ? (
             <>
               {' '}
               · order <span className="mono">{run.order.orderNumber}</span>
             </>
           ) : null}
+          .
         </p>
-      </div>
+      </PageHead>
 
-      <div className="card">
-        <div className="btn-row">
-          {(operations ?? [])
-            .filter((o) => o.anySupported && o.needsMail)
-            .map((o) => (
-              <button
-                key={o.id}
-                className={`btn ${activeOperation === o.id ? '' : 'secondary'} small`}
-                onClick={() => {
-                  setOperation(o.id);
-                  setValidation(null);
-                  setBlocked([]);
-                }}
-              >
-                {o.label}
-                {o.families.some((f) => f.sent) ? ' ✓' : ''}
-              </button>
-            ))}
-          <div className="spacer" />
-          <div className="btn-row">
+      <Sheet
+        eyebrow={
+          opMeta?.movement
+            ? `Moves ${opMeta.movement.fromLabels.join(' / ')} → ${opMeta.movement.toLabels.join(' / ')}`
+            : opMeta?.stagePreserving
+              ? 'Does not change the life cycle stage'
+              : 'Operation'
+        }
+        title={opMeta?.label ?? 'Pipeline'}
+        actions={
+          <>
             <button className="btn secondary small" disabled={busy === 'generate'} onClick={generate}>
               {busy === 'generate' ? 'Generating…' : filesForOperation.length ? 'Re-generate' : 'Generate files'}
             </button>
             {filesForOperation.length ? (
-              <button className="btn secondary small" disabled={busy === 'validate'} onClick={loadValidation}>
+              <button className="btn quiet small" disabled={busy === 'validate'} onClick={loadValidation}>
                 {busy === 'validate' ? 'Checking…' : 'Re-run checks'}
               </button>
             ) : null}
-          </div>
-        </div>
+          </>
+        }
+      >
+        <Segmented
+          label="Operation"
+          value={activeOperation}
+          onChange={(id) => {
+            setOperation(id);
+            setValidation(null);
+            setBlocked([]);
+          }}
+          options={(operations ?? [])
+            .filter((o) => o.anySupported && o.needsMail)
+            .map((o) => ({
+              value: o.id,
+              label: o.label,
+              done: o.families.some((f) => f.sent),
+              // The stage movement in the tooltip, so the order of the list is not the only
+              // hint about which operation follows which.
+              title: o.movement
+                ? `${o.movement.fromLabels.join(' / ')} → ${o.movement.toLabels.join(' / ')}`
+                : o.stagePreserving
+                  ? 'Updates data without moving the device'
+                  : undefined,
+            }))}
+        />
 
         {opMeta ? (
-          <div className="table-wrap" style={{ marginTop: '0.75rem' }}>
+          <div className="table-wrap" style={{ marginTop: '1rem' }}>
             <table>
               <thead>
                 <tr>
@@ -194,7 +210,7 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
                 {opMeta.families.map((f) => (
                   <tr key={f.family}>
                     <td className="small">{f.familyLabel}</td>
-                    <td className="mono small">{f.to ?? <span className="muted">—</span>}</td>
+                    <td className="mono small">{f.to ?? <span className="faint">—</span>}</td>
                     <td className="mono small muted">{f.templateId ?? 'not supported'}</td>
                     <td>
                       {!f.supported ? (
@@ -215,7 +231,7 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
             </table>
           </div>
         ) : null}
-      </div>
+      </Sheet>
 
       {blocked.length ? (
         <Callout tone="warn" title="Some families produced no file">
@@ -231,7 +247,7 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
         <Callout tone={notice.tone} title={notice.title}>
           {notice.body}
           {notice.confirmFamily ? (
-            <div className="btn-row" style={{ marginTop: '0.6rem' }}>
+            <div className="btn-row" style={{ marginTop: '0.65rem' }}>
               <button
                 className="btn small"
                 disabled={busy === `confirm:${notice.confirmFamily}`}
@@ -288,21 +304,21 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
       )}
 
       {wizardFile ? (
-        <div className="card">
-          <h2>Wizard upload</h2>
-          <p className="muted small">
-            Not emailed. Upload this in the "Load Asset &amp; Ship Order" wizard once the shipment
-            update has settled. It is the only file whose row count must equal the order's
-            serialized quantity.
-          </p>
-          <FileCard
-            runId={runId}
-            artifactKey={wizardFile[0]}
-            artifact={wizardFile[1]}
-            preview={previews[wizardFile[0]]}
-            uploadOnly
-          />
-        </div>
+        <FileCard
+          runId={runId}
+          artifactKey={wizardFile[0]}
+          artifact={wizardFile[1]}
+          preview={previews[wizardFile[0]]}
+          uploadOnly
+          familyLabel="Wizard upload · not emailed"
+          note={
+            <p className="prose small">
+              Upload this in the "Load Asset &amp; Ship Order" wizard once the shipment update has
+              settled. It is the only file whose row count must equal the order's serialized
+              quantity.
+            </p>
+          }
+        />
       ) : null}
 
       {validation ? <Checklist validation={validation} /> : null}
@@ -333,43 +349,28 @@ function FileCard({
   uploadOnly,
   transport,
   autoSendDefault,
+  note,
 }) {
   const [showBytes, setShowBytes] = React.useState(false);
   const outlook = transport === 'outlook-web';
 
   return (
-    <div className="card">
-      <div className="card-row" style={{ marginBottom: '0.5rem' }}>
-        <div style={{ minWidth: 0 }}>
-          {familyLabel ? <div className="small muted">{familyLabel}</div> : null}
-          <div className="mono">{artifact.filename}</div>
-          <div className="muted small">
-            {artifact.rowCount} row(s) · {artifact.byteLength} bytes · template{' '}
-            <span className="mono">{artifact.template}</span>
-          </div>
-          {to ? (
-            <div className="small" style={{ marginTop: '0.3rem' }}>
-              → <span className="mono">{to}</span>
-            </div>
-          ) : null}
-        </div>
-        <div className="spacer" />
-        <div className="btn-row">
-          <button className="btn secondary small" onClick={() => setShowBytes((v) => !v)}>
+    <Sheet
+      className="file-sheet"
+      eyebrow={familyLabel}
+      title={artifact.filename}
+      actions={
+        <>
+          <button className="btn quiet small" onClick={() => setShowBytes((v) => !v)}>
             {showBytes ? 'Hide' : 'Show'} bytes
           </button>
-          <a
-            className="btn secondary small"
-            style={{ textDecoration: 'none' }}
-            href={api.downloadUrl(runId, artifactKey, Boolean(artifact.uploadAs))}
-          >
+          <a className="btn small" href={api.downloadUrl(runId, artifactKey, Boolean(artifact.uploadAs))}>
             Download
           </a>
           {!uploadOnly ? (
             <>
               <a
-                className="btn secondary small"
-                style={{ textDecoration: 'none' }}
+                className="btn small"
                 href={api.emlUrl(runId, operation, family)}
                 title="Ready-to-send message, if SMTP is blocked"
               >
@@ -379,7 +380,7 @@ function FileCard({
                 <>
                   <Badge tone="ok">sent {new Date(alreadySent.sentAt).toLocaleTimeString()}</Badge>
                   <button
-                    className="btn danger small"
+                    className="btn danger outline small"
                     disabled={busy}
                     onClick={() => {
                       if (
@@ -406,7 +407,7 @@ function FileCard({
                   </button>
                   {outlook ? (
                     <button
-                      className="btn danger small"
+                      className="btn danger outline small"
                       disabled={!canSend || busy}
                       title="Fill the compose window and press Send without review"
                       onClick={() => {
@@ -427,48 +428,73 @@ function FileCard({
               )}
             </>
           ) : null}
+        </>
+      }
+    >
+      {note}
+
+      {/* The mailbox is the only thing that tells the parser which operation this is. */}
+      {to ? (
+        <div className="dest">
+          <span className="eyebrow">To</span>
+          <span className="addr mono">{to}</span>
         </div>
+      ) : null}
+
+      <div className="file-meta">
+        <span>
+          <span className="eyebrow">Rows</span>
+          <span className="mono tab">{artifact.rowCount}</span>
+        </span>
+        <span>
+          <span className="eyebrow">Bytes</span>
+          <span className="mono tab">{artifact.byteLength}</span>
+        </span>
+        <span>
+          <span className="eyebrow">Template</span>
+          <span className="mono">{artifact.template}</span>
+        </span>
       </div>
 
       {blockers.length ? (
-        <p className="small" style={{ color: 'var(--warn)', margin: '0.3rem 0 0' }}>
+        <p className="small" style={{ color: 'var(--warn)', margin: '0.6rem 0 0' }}>
           Sending blocked — placeholder config: {blockers.join(', ')}
         </p>
       ) : null}
 
       {alreadySent?.sentItems && alreadySent.sentItems.confirmed !== true ? (
-        <p className="small" style={{ color: 'var(--warn)', margin: '0.3rem 0 0' }}>
+        <p className="small" style={{ color: 'var(--warn)', margin: '0.6rem 0 0' }}>
           Sent Items: {alreadySent.sentItems.reason ?? 'not confirmed'}
         </p>
       ) : null}
 
       {showBytes && preview ? (
-        <div style={{ marginTop: '0.6rem' }}>
+        <div style={{ marginTop: '0.75rem' }}>
           <pre className="hex">{preview.hex}</pre>
         </div>
       ) : null}
-    </div>
+    </Sheet>
   );
 }
 
 function Checklist({ validation }) {
   return (
-    <div className="card">
-      <div className="card-row" style={{ marginBottom: '0.5rem' }}>
-        <h2 style={{ margin: 0 }}>Pre-send checks</h2>
-        <div className="spacer" />
-        <span className="muted small">
-          {validation.counts.passed} passed · {validation.counts.failed} failed ·{' '}
-          {validation.counts.skipped} skipped
-        </span>
-        {validation.canSend ? <Badge tone="ok">clear to send</Badge> : <Badge tone="fail">{validation.blockers.length} blocker(s)</Badge>}
-      </div>
-
+    <Sheet
+      eyebrow={`${validation.counts.passed} passed · ${validation.counts.failed} failed · ${validation.counts.skipped} skipped`}
+      title="Pre-send checks"
+      actions={
+        validation.canSend ? (
+          <Badge tone="ok">clear to send</Badge>
+        ) : (
+          <Badge tone="fail">{validation.blockers.length} blocker(s)</Badge>
+        )
+      }
+    >
       {Object.entries(validation.groups).map(([key, checks]) => (
-        <div key={key} style={{ marginBottom: '1rem' }}>
-          <h3 className="small" style={{ color: 'var(--muted)' }}>
+        <div key={key} style={{ marginBottom: '1.1rem' }}>
+          <span className={key === 'org' ? 'eyebrow' : 'group-label'} style={{ marginBottom: '0.35rem' }}>
             {key === 'org' ? 'Against the org' : key}
-          </h3>
+          </span>
           <ul className="checklist">
             {checks.map((c) => (
               <li key={`${key}:${c.id}`}>
@@ -488,6 +514,6 @@ function Checklist({ validation }) {
           </ul>
         </div>
       ))}
-    </div>
+    </Sheet>
   );
 }

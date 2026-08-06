@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Stat } from '../components/ui.jsx';
+import { Badge, Callout, PageHead, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * Generated ids, per family and per series.
@@ -40,25 +40,26 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
 
   return (
     <>
-      <div className="page-head">
-        <h1>Ids</h1>
+      <PageHead eyebrow="Step 04 · Serial blocks" title="Ids">
         <p>
           One contiguous block per series, from a persisted counter. Every numeric series is
           checked against <code>Asset.Name</code>; the prefixed pseudo-MACs are not, since they
           are not asset names.
         </p>
-      </div>
+      </PageHead>
 
-      <div className="card">
+      <Sheet>
         <div className="card-row">
-          <Stat value={totalUnits} label="Units" />
-          <Stat value={run.groups.length} label="Families" />
-          {run.idGeneration ? (
-            <Stat
-              value={run.idGeneration.allocations.reduce((n, a) => n + a.attempts, 0)}
-              label="Allocation attempts"
-            />
-          ) : null}
+          <div className="stat-row">
+            <Stat value={totalUnits} label="Units" />
+            <Stat value={run.groups.length} label="Families" />
+            {run.idGeneration ? (
+              <Stat
+                value={run.idGeneration.allocations.reduce((n, a) => n + a.attempts, 0)}
+                label="Allocation attempts"
+              />
+            ) : null}
+          </div>
           <div className="spacer" />
           <div className="btn-row">
             <button
@@ -78,7 +79,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
               </button>
             ) : null}
             <button
-              className="btn secondary small"
+              className="btn quiet small"
               disabled={busy === 'reset'}
               onClick={() =>
                 act(async () => {
@@ -92,7 +93,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
             </button>
           </div>
         </div>
-      </div>
+      </Sheet>
 
       {allocation?.warning ? (
         <Callout tone="warn" title="Not verified against the org">
@@ -108,7 +109,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
         ) : (
           <Callout tone="fail" title={`${checkResult.taken.length} id(s) are already taken`}>
             These exist as assets and will make the load fail. Re-allocate to move past them.
-            <div className="mono small" style={{ marginTop: '0.4rem' }}>
+            <div className="mono small" style={{ marginTop: '0.45rem' }}>
               {checkResult.taken.slice(0, 12).join(', ')}
             </div>
           </Callout>
@@ -116,8 +117,10 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
       ) : null}
 
       {cursors?.length ? (
-        <div className="card">
-          <h3>Next value per series</h3>
+        <Sheet eyebrow="Persisted counters" title="Next value per series">
+          <p className="prose small">
+            Held in <code>data/counters.json</code>, keyed <code>env:templateId:series</code>.
+          </p>
           <div className="table-wrap">
             <table>
               <thead>
@@ -145,7 +148,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
               </tbody>
             </table>
           </div>
-        </div>
+        </Sheet>
       ) : null}
 
       {hasIds
@@ -187,24 +190,25 @@ function GroupIds({ group, allocation, taken }) {
 
   const seriesNames = Object.keys(rows[0].generated);
   const takenSet = new Set(taken);
+  const range = allocation?.ranges?.[group.primarySeries];
 
   return (
-    <div className="card">
-      <div className="card-row" style={{ marginBottom: '0.6rem' }}>
-        <h2 style={{ margin: 0 }}>{group.familyLabel}</h2>
-        <div className="spacer" />
-        {allocation?.ranges?.[group.primarySeries] ? (
+    <Sheet
+      eyebrow={`${rows.length} unit(s) · ${seriesNames.length} series`}
+      title={group.familyLabel}
+      actions={
+        range ? (
           <span className="muted small">
             {group.primarySeries}{' '}
             <span className="mono">
-              {allocation.ranges[group.primarySeries].from}–{allocation.ranges[group.primarySeries].to}
+              {range.from}–{range.to}
             </span>
           </span>
-        ) : null}
-      </div>
-
+        ) : null
+      }
+    >
       {allocation?.collisions?.length ? (
-        <p className="small muted">
+        <p className="muted small">
           Skipped past {allocation.collisions.length} existing id(s); the block below is clean.
         </p>
       ) : null}
@@ -213,10 +217,10 @@ function GroupIds({ group, allocation, taken }) {
         <table>
           <thead>
             <tr>
-              <th>#</th>
+              <th className="num">#</th>
               <th>SKU</th>
               {seriesNames.map((n) => (
-                <th key={n} className="mono">
+                <th key={n} className="raw">
                   {n}
                 </th>
               ))}
@@ -225,7 +229,7 @@ function GroupIds({ group, allocation, taken }) {
           <tbody>
             {rows.map((row, i) => (
               <tr key={i}>
-                <td className="num muted">{i + 1}</td>
+                <td className="num faint">{i + 1}</td>
                 <td className="mono small">{row.sku}</td>
                 {seriesNames.map((n) => (
                   <td key={n} className="mono">
@@ -238,6 +242,6 @@ function GroupIds({ group, allocation, taken }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </Sheet>
   );
 }

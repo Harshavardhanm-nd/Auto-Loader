@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge } from '../components/ui.jsx';
+import { Badge, PageHead, Sheet } from '../components/ui.jsx';
 
 /**
  * Run history. Device ids that were emailed exist in the org whether or not this app
@@ -21,21 +21,23 @@ export default function HistoryPage({ setRunId, goto, onError }) {
 
   return (
     <>
-      <div className="page-head">
-        <h1>History</h1>
-        <p>Every run, with the device ids it loaded.</p>
-      </div>
+      <PageHead eyebrow="Record" title="History">
+        <p>
+          Every run, with the device ids it loaded. Deleting a record here removes this app's copy
+          only — whatever was emailed stays in Salesforce.
+        </p>
+      </PageHead>
 
       {runs === null ? (
         <p className="muted">Loading…</p>
       ) : runs.length === 0 ? (
-        <div className="card">
+        <Sheet>
           <p className="muted small" style={{ margin: 0 }}>
-            No runs yet.
+            No runs yet. Start one from Connect and it will be recorded here.
           </p>
-        </div>
+        </Sheet>
       ) : (
-        <div className="card">
+        <Sheet eyebrow={`${runs.length} run(s)`} title="Loaded to date">
           <div className="table-wrap">
             <table>
               <thead>
@@ -58,12 +60,12 @@ export default function HistoryPage({ setRunId, goto, onError }) {
                   <tr key={run.runId}>
                     <td className="mono small">
                       {run.runId}
-                      <div className="muted">{new Date(run.createdAt).toLocaleString()}</div>
+                      <div className="faint">{new Date(run.createdAt).toLocaleString()}</div>
                     </td>
                     <td className="small">{run.env}</td>
                     <td className="small">{run.operation}</td>
                     <td className="mono small">{run.trackingId}</td>
-                    <td className="mono small">{run.orderNumber ?? <span className="muted">none</span>}</td>
+                    <td className="mono small">{run.orderNumber ?? <span className="faint">none</span>}</td>
                     <td className="small">
                       {run.groups.map((g) => (
                         <div key={g.family}>
@@ -88,7 +90,7 @@ export default function HistoryPage({ setRunId, goto, onError }) {
                           </div>
                         ))
                       ) : (
-                        <span className="muted">—</span>
+                        <span className="faint">—</span>
                       )}
                     </td>
                     <td className="num">
@@ -108,15 +110,11 @@ export default function HistoryPage({ setRunId, goto, onError }) {
                         >
                           Open
                         </button>
-                        <a
-                          className="btn secondary small"
-                          style={{ textDecoration: 'none' }}
-                          href={api.resultTextUrl(run.runId)}
-                        >
+                        <a className="btn small" href={api.resultTextUrl(run.runId)}>
                           Ids
                         </a>
                         <button
-                          className="btn secondary small"
+                          className="btn quiet small"
                           onClick={async () => {
                             if (
                               window.confirm(
@@ -137,7 +135,7 @@ export default function HistoryPage({ setRunId, goto, onError }) {
               </tbody>
             </table>
           </div>
-        </div>
+        </Sheet>
       )}
     </>
   );
