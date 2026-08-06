@@ -371,6 +371,12 @@ runsRouter.post('/:runId/generate', (req, res, next) => {
     const operation = req.body?.operation ?? run.operation;
     if (!loadOperations()[operation]) throw new Error(`Unknown operation "${operation}".`);
 
+    // Optional subset of device ids — used when triggering shipmentUpdate from the Watch page.
+    const deviceIdsFilter =
+      Array.isArray(req.body?.deviceIds) && req.body.deviceIds.length > 0
+        ? new Set(req.body.deviceIds.map(String))
+        : null;
+
     const built = [];
     const blocked = [];
 
@@ -378,7 +384,8 @@ runsRouter.post('/:runId/generate', (req, res, next) => {
     // The received sheet is identical across families and lists every device id in the run.
     if (isSharedOperation(operation)) {
       const template = findTemplate(SHARED_FAMILY, operation);
-      const ids = runDeviceIds(run);
+      const allIds = runDeviceIds(run);
+      const ids = deviceIdsFilter ? allIds.filter((id) => deviceIdsFilter.has(String(id))) : allIds;
       if (!ids.length) throw new Error('Allocate ids before generating this operation.');
 
       const artifact = buildCsv(template, {
@@ -418,8 +425,12 @@ runsRouter.post('/:runId/generate', (req, res, next) => {
         continue;
       }
 
+      const allDeviceIds = runDeviceIds(run);
+      const deviceIds = deviceIdsFilter
+        ? allDeviceIds.filter((id) => deviceIdsFilter.has(String(id)))
+        : allDeviceIds;
       const rows = template.reusesExistingDevices
-        ? planExistingRows(runDeviceIds(run))
+        ? planExistingRows(deviceIds)
         : planGeneratedRows(group.lines);
 
       const artifact = buildCsv(template, {

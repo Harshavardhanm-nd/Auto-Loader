@@ -43,6 +43,7 @@ export default function App() {
   const [runId, setRunId] = React.useState(null);
   const [run, setRun] = React.useState(null);
   const [error, setError] = React.useState(null);
+  const [reviewOperation, setReviewOperation] = React.useState(null);
   const [theme, setTheme] = useTheme();
 
   const refreshSession = React.useCallback(
@@ -107,6 +108,7 @@ export default function App() {
     setSetup(EMPTY_SETUP);
     setRunId(null);
     setRun(null);
+    setReviewOperation(null);
     goto((options.connected ?? connected) ? 'setup' : 'connect');
   };
 
@@ -124,6 +126,8 @@ export default function App() {
     goto,
     onError: handleError,
     startNewRun,
+    reviewOperation,
+    setReviewOperation,
   };
 
   return (

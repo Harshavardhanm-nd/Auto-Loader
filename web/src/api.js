@@ -82,7 +82,8 @@ export const api = {
   allocate: (runId) => post(`/api/runs/${runId}/allocate`, {}),
   checkIds: (runId) => post(`/api/runs/${runId}/check-ids`, {}),
 
-  generate: (runId, operation) => post(`/api/runs/${runId}/generate`, { operation }),
+  generate: (runId, operation, deviceIds) =>
+    post(`/api/runs/${runId}/generate`, { operation, ...(deviceIds ? { deviceIds } : {}) }),
   operations: (runId) => get(`/api/runs/${runId}/operations`),
   preview: (runId, key, maxBytes) =>
     get(`/api/runs/${runId}/preview/${encodeURIComponent(key)}?${q({ maxBytes })}`),
