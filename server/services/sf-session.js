@@ -337,13 +337,24 @@ async function firstVisible(page, selectors) {
   return null;
 }
 
+/**
+ * The visible error on the page, if any.
+ *
+ * Visibility is the whole test. Both org login pages ship a hidden `.error[role="alert"]`
+ * holding "Enter a custom domain name that contains only alphanumeric characters…", and
+ * `innerText` returns it whether or not it is on screen. Reading that unconditionally set a
+ * soft error on every single cycle, which then got prepended to the MFA prompt — so the code
+ * box asked about custom domain names.
+ */
 async function readError(page) {
   for (const selector of SELECTORS.error) {
     try {
-      const text = await page.locator(selector).first().innerText({ timeout: 200 });
+      const locator = page.locator(selector).first();
+      if (!(await locator.count()) || !(await locator.isVisible())) continue;
+      const text = await locator.innerText({ timeout: 200 });
       if (text?.trim()) return text.trim();
     } catch {
-      /* no error element */
+      /* no error element, or the page navigated mid-check */
     }
   }
   return null;
@@ -374,8 +385,15 @@ function publicAttempt(a) {
     // True once the driver has stopped steering and is only watching for the session.
     manualTakeover: a.status === 'needs-your-click' || a.status === 'sso-handoff',
     currentUrl: a.currentUrl ?? null,
+    // Whether this is running out of sight, and whether a window can still be summoned. A
+    // background attempt that stalls must never be a dead end.
+    headless: Boolean(a.headless),
+    canReveal: Boolean(a.headless) && !FINISHED.includes(a.status),
   };
 }
+
+/** Statuses past which nothing can be done to the attempt. */
+const FINISHED = ['connected', 'failed', 'cancelled'];
 
 export function getAttempt(attemptId) {
   const attempt = attempts.get(attemptId);
@@ -387,8 +405,8 @@ export function describeAttempt(attemptId) {
   return publicAttempt(getAttempt(attemptId));
 }
 
-async function teardown(attempt) {
-  attempt.credentials = null;
+/** Close the browser but keep the attempt alive — used when relaunching it visibly. */
+async function teardownBrowser(attempt) {
   try {
     await attempt.context?.close();
   } catch {
@@ -396,6 +414,11 @@ async function teardown(attempt) {
   }
   attempt.context = null;
   attempt.page = null;
+}
+
+async function teardown(attempt) {
+  attempt.credentials = null;
+  await teardownBrowser(attempt);
 }
 
 function scheduleExpiry(attempt) {
@@ -428,19 +451,28 @@ export async function startLogin({ env, method = 'password', username, password,
   // omit them and the browser is handed over at the identity provider.
   const driveIdp = method === 'sso' && Boolean(username && password);
 
+  // Handing over an invisible window is meaningless, so an SSO attempt with no credentials —
+  // the one flow whose whole design is "the operator signs in at the identity provider" — is
+  // always headed regardless of what anyone asked for.
+  const needsWindow = method === 'sso' && !driveIdp;
+
   const id = `login_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
   const attempt = {
     id,
     env,
     method,
     status: 'starting',
-    message: 'Opening browser…',
+    message: 'Signing in…',
     startedAt: new Date().toISOString(),
     credentials: method === 'password' || driveIdp ? { username, password } : null,
     driveIdp,
     environment,
-    // Headed by default: you can see what it is doing and finish anything it cannot.
-    headless: headless ?? process.env.HEADLESS === 'true',
+    needsWindow,
+    // Background by default: the driver reports what it is doing, prompts in the app for a
+    // verification code, and only opens a window if it hits a step it cannot drive. Set
+    // HEADLESS=false to watch it work.
+    headless: needsWindow ? false : headless ?? process.env.HEADLESS !== 'false',
+    revealRequested: false,
     mfaResolver: null,
     filledUsername: false,
     filledPassword: false,
@@ -457,6 +489,32 @@ export async function startLogin({ env, method = 'password', username, password,
     await teardown(attempt);
   });
 
+  return publicAttempt(attempt);
+}
+
+/**
+ * Promote a background attempt to a visible browser window.
+ *
+ * The escape hatch for the one thing headless cannot do: let the operator finish a step the
+ * driver does not recognise. The loop picks the request up on its next cycle and relaunches
+ * onto the page it had reached.
+ */
+export function revealBrowser(attemptId) {
+  const attempt = getAttempt(attemptId);
+  if (FINISHED.includes(attempt.status)) {
+    throw new Error(`This attempt is already "${attempt.status}".`);
+  }
+  if (!attempt.headless) return publicAttempt(attempt);
+  if (attempt.status === 'awaiting-mfa') {
+    // The code field in the app is the whole point of running in the background; relaunching
+    // here would strand the promise the driver is parked on.
+    throw new Error('Enter the verification code here instead — the browser is mid-prompt.');
+  }
+  // Flip the flag here rather than in the driver, so the response this call returns already
+  // reports a headed attempt — otherwise the UI re-offers the button until the next poll.
+  attempt.headless = false;
+  attempt.revealRequested = true;
+  attempt.message = 'Opening the browser window…';
   return publicAttempt(attempt);
 }
 
@@ -492,11 +550,12 @@ export async function cancelLogin(attemptId) {
 // The driver
 // ---------------------------------------------------------------------------
 
-async function runLogin(attempt) {
+/** Launch (or relaunch) the attempt's browser and land it on `url`. */
+async function openContext(attempt, url) {
   const { chromium } = await getPlaywright();
-  const { loginUrl, instanceUrl, apiVersion } = attempt.environment.salesforce;
 
-  // A persistent profile keeps "remember this device", so MFA is usually a one-off.
+  // A persistent profile keeps "remember this device", so MFA is usually a one-off. It is also
+  // what makes relaunching viable: cookies and trust survive the swap to a visible window.
   fs.mkdirSync(profileDir(attempt.env), { recursive: true, mode: 0o700 });
   attempt.context = await chromium.launchPersistentContext(profileDir(attempt.env), {
     headless: attempt.headless,
@@ -504,17 +563,37 @@ async function runLogin(attempt) {
     args: ['--disable-blink-features=AutomationControlled'],
   });
   attempt.page = attempt.context.pages()[0] ?? (await attempt.context.newPage());
-  const page = attempt.page;
-  page.setDefaultTimeout(15_000);
+  attempt.page.setDefaultTimeout(15_000);
+  await attempt.page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  return attempt.page;
+}
+
+async function runLogin(attempt) {
+  const { loginUrl, instanceUrl, apiVersion } = attempt.environment.salesforce;
 
   attempt.status = 'logging-in';
-  attempt.message = 'Opening the Salesforce login page…';
-  await page.goto(loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  attempt.message = attempt.headless
+    ? 'Signing in to Salesforce in the background…'
+    : 'Opening the Salesforce login page…';
+  let page = await openContext(attempt, loginUrl);
 
   // Adaptive loop: look at the page, do the next useful thing, repeat.
   const deadline = Date.now() + ATTEMPT_TTL_MS - 30_000;
   while (Date.now() < deadline) {
     if (attempt.status === 'cancelled') return;
+
+    // A background attempt that hit a step it cannot drive can be promoted to a real window.
+    // Playwright cannot toggle an existing context, so the browser is relaunched onto whatever
+    // page the driver had reached; the profile carries the progress across.
+    if (attempt.revealRequested) {
+      attempt.revealRequested = false;
+      const resumeAt = attempt.currentUrl || loginUrl;
+      await teardownBrowser(attempt);
+      attempt.status = 'logging-in';
+      attempt.message = 'Opening the browser window…';
+      attempt.stall = 0;
+      page = await openContext(attempt, resumeAt);
+    }
 
     attempt.currentUrl = page.url();
 
@@ -543,14 +622,16 @@ async function runLogin(attempt) {
       attempt.stall = 0;
     } else if (++attempt.stall === STALL_CYCLES && attempt.status !== 'sso-handoff') {
       // Something on screen that this driver does not recognise. Rather than fail, hand over:
-      // the browser is already open and the loop keeps watching for the session.
+      // the loop keeps watching for the session either way.
       //
       // An SSO handoff is excluded: it is already waiting on the identity provider by design,
       // and its own message says so more precisely than this one would.
       attempt.status = 'needs-your-click';
-      attempt.message =
-        'Salesforce is showing a step this app does not recognise. Finish it in the browser ' +
-        'window that is open — the session will be picked up automatically.';
+      attempt.message = attempt.headless
+        ? 'Salesforce is showing a step this app does not recognise. Open the browser window to ' +
+          'finish it — the session will be picked up automatically.'
+        : 'Salesforce is showing a step this app does not recognise. Finish it in the browser ' +
+          'window that is open — the session will be picked up automatically.';
     }
 
     await page.waitForTimeout(CYCLE_MS);

@@ -17,6 +17,9 @@ import {
   fetchOrder,
   fetchAssetsByDeviceId,
   fetchAssetsByTrackingId,
+  tallyRows,
+  rescoreSnapshot,
+  splitByStagePosition,
 } from '../services/sf-client.js';
 import { readSession } from '../services/sf-session.js';
 import { deliver, buildEml, describeSmtp } from '../services/mailer.js';
@@ -29,6 +32,7 @@ import {
   validateWizardRowCount,
   validateSerialsShipped,
   validateSendTarget,
+  duplicateSendReason,
   summariseChecks,
   artifactPreview,
 } from '../services/validator.js';
@@ -76,7 +80,13 @@ function groupTemplate(group, operation) {
 // ---------------------------------------------------------------------------
 
 runsRouter.get('/', (req, res) => {
-  res.json({ runs: listRuns({ limit: Number(req.query.limit) || 50 }) });
+  res.json({
+    runs: listRuns({
+      limit: Number(req.query.limit) || 50,
+      // Omit `env` to list every environment; the History page always names one.
+      env: req.query.env || null,
+    }),
+  });
 });
 
 runsRouter.post('/', async (req, res, next) => {
@@ -253,14 +263,23 @@ runsRouter.post('/:runId/cursors/reset', (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
     const { family } = req.body ?? {};
+    // Report what each series was seeded back to. Without this the call looks like a no-op
+    // whenever no counter had been persisted yet — the cursor already read sampleStart, and
+    // resetting it to sampleStart changed nothing visible.
+    const reset = [];
     for (const group of run.groups) {
       if (family && group.family !== family) continue;
       const template = getTemplate(group.templateId);
       for (const [name, def] of Object.entries(template.series ?? {})) {
-        resetCursor(run.env, group.templateId, name, def);
+        reset.push({
+          family: group.family,
+          templateId: group.templateId,
+          seriesName: name,
+          next: resetCursor(run.env, group.templateId, name, def),
+        });
       }
     }
-    res.json({ reset: true });
+    res.json({ reset: true, series: reset });
   } catch (err) {
     next(err);
   }
@@ -366,7 +385,23 @@ function collectCheckableIds(run) {
   return ids;
 }
 
-/** The primary ids this run minted, which is what polling watches. */
+/**
+ * The devices a given stage actually acted on.
+ *
+ * Not the same as the run's devices. A shipment update raised from the Watch page covers only
+ * the units the operator ticked, so watching the whole run would sit waiting on devices that
+ * were never in the file and report them as never arriving. The generated artifact records what
+ * it contains, so that is the authority; the run's full list is the fallback for a stage with no
+ * file yet, and for runs recorded before artifacts carried ids.
+ */
+function stageDeviceIds(run, stage) {
+  const fromFiles = Object.entries(run.artifacts ?? {})
+    .filter(([key]) => key.startsWith(`${stage}:`))
+    .flatMap(([, artifact]) => artifact.deviceIds ?? []);
+  return fromFiles.length ? [...new Set(fromFiles.map(String))] : runDeviceIds(run);
+}
+
+/** The primary ids this run minted. */
 function runDeviceIds(run) {
   const ids = [];
   for (const group of run.groups) {
@@ -661,12 +696,13 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
     const key = artifactKey(operation, family);
     const artifact = loadArtifact(run.runId, key);
 
-    const previous = run.sends?.[key];
-    if (previous?.ok && !force) {
-      throw new Error(
-        `${artifact.filename} was already sent to ${previous.to} at ${previous.sentAt}. ` +
-          'Re-sending the same file to the same mailbox is a double load. Pass force to override.'
-      );
+    if (!force) {
+      const duplicate = duplicateSendReason({
+        currentSend: run.sends?.[key],
+        archivedSends: run.sendHistory?.[key] ?? [],
+        artifact,
+      });
+      if (duplicate) throw new Error(duplicate);
     }
 
     const result = await deliver(
@@ -685,6 +721,25 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
     // block the real send that has not happened yet, and would show the run as complete.
     if (result.awaitingYourSend) {
       appendEvent(run.runId, 'mail.composed', `${operation}/${family} → ${dl.to} (awaiting your Send)`);
+      // Recorded on the run, not just returned. A composed message is a real thing sitting open
+      // in Outlook; if that fact lives only in the page's memory it is lost the moment the
+      // operator navigates away, and the card goes back to reading "nothing has happened here"
+      // while a loaded email waits for a Send nobody is being reminded to press.
+      //
+      // This is emphatically not a send — `run.sends` stays untouched, so the duplicate guard is
+      // not armed against the real send that has not happened yet.
+      const composed = updateRun(run.runId, (r) => {
+        r.pendingCompose = {
+          key,
+          operation,
+          family,
+          filename: artifact.filename,
+          to: dl.to,
+          subject: dl.subject,
+          composedAt: new Date().toISOString(),
+        };
+        return r;
+      });
       res.json({
         composedOnly: true,
         transport: result.transport,
@@ -693,6 +748,7 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
         filename: artifact.filename,
         checks: result.checks,
         message: result.message,
+        run: composed,
       });
       return;
     }
@@ -708,11 +764,15 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
         dlSource: `${dl.source}["${dl.key}"]`,
         filename: artifact.filename,
         rowCount: artifact.rowCount,
+        // What this send actually carried. The duplicate guard compares against it, so a later
+        // file covering different devices is recognised as a new send rather than a repeat.
+        deviceIds: artifact.deviceIds ?? [],
         messageId: result.messageId ?? null,
         smtpResponse: result.response ?? null,
         sentItems: result.sentItems ?? null,
         sentAt: new Date().toISOString(),
       };
+      if (r.pendingCompose?.key === key) delete r.pendingCompose;
       r.status = 'sent';
       return r;
     });
@@ -778,11 +838,15 @@ runsRouter.post('/:runId/send/confirm', async (req, res, next) => {
         dlSource: `${dl.source}["${dl.key}"]`,
         filename: artifact.filename,
         rowCount: artifact.rowCount,
+        // Same as the automatic path: without this the guard cannot tell a later, different
+        // file from a repeat of this one.
+        deviceIds: artifact.deviceIds ?? [],
         sentItems,
         sentByHand: true,
         forced: sentItems.confirmed !== true,
         sentAt: new Date().toISOString(),
       };
+      if (r.pendingCompose?.key === key) delete r.pendingCompose;
       r.status = 'sent';
       return r;
     });
@@ -797,8 +861,15 @@ runsRouter.post('/:runId/send/confirm', async (req, res, next) => {
 /** Discard a compose window left open from a compose-and-stop that was abandoned. */
 runsRouter.post('/:runId/mail/close', async (req, res, next) => {
   try {
-    getRun(req.params.runId);
-    res.json(await closeOutlook());
+    const run = getRun(req.params.runId);
+    const closed = await closeOutlook();
+    // The window is gone, so the message it held is not going to be sent. Leaving the marker
+    // behind would keep the card saying "awaiting your Send" for a compose that no longer exists.
+    const updated = updateRun(run.runId, (r) => {
+      delete r.pendingCompose;
+      return r;
+    });
+    res.json({ ...closed, run: updated });
   } catch (err) {
     next(err);
   }
@@ -838,7 +909,12 @@ runsRouter.get('/:runId/eml', (req, res, next) => {
 runsRouter.post('/:runId/poll/:stage/start', (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
-    res.json(startPolling(run.runId, req.params.stage, { deviceIds: runDeviceIds(run), ...(req.body ?? {}) }));
+    res.json(
+      startPolling(run.runId, req.params.stage, {
+        deviceIds: stageDeviceIds(run, req.params.stage),
+        ...(req.body ?? {}),
+      })
+    );
   } catch (err) {
     next(err);
   }
@@ -855,7 +931,7 @@ runsRouter.post('/:runId/poll/:stage/stop', (req, res, next) => {
 runsRouter.post('/:runId/poll/:stage/once', async (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
-    res.json(await pollOnce(run.runId, req.params.stage, runDeviceIds(run)));
+    res.json(await pollOnce(run.runId, req.params.stage, stageDeviceIds(run, req.params.stage)));
   } catch (err) {
     next(err);
   }
@@ -867,13 +943,36 @@ runsRouter.get('/:runId/poll/:stage', (req, res, next) => {
     res.json({
       stage: req.params.stage,
       running: isPolling(run.runId, req.params.stage),
-      snapshot: run.polling?.[req.params.stage] ?? null,
+      snapshot: scopeSnapshot(run, req.params.stage, run.polling?.[req.params.stage] ?? null),
       result: run.result ?? null,
     });
   } catch (err) {
     next(err);
   }
 });
+
+/**
+ * Trim a stored snapshot to the devices the stage actually covers.
+ *
+ * A snapshot is written once and read many times, so one taken before the device set was known
+ * keeps reporting the whole run every time the page loads — the panel stays wrong until someone
+ * happens to poll again. Filtering on read means any stale snapshot corrects itself the moment it
+ * is displayed, for every stage, without waiting for a refresh.
+ *
+ * Only ever removes rows. A device missing from a snapshot cannot be invented here; it appears on
+ * the next poll.
+ */
+function scopeSnapshot(run, stage, snapshot) {
+  if (!snapshot?.rows?.length) return snapshot;
+
+  // Order matters: narrow to the devices this stage covers, re-derive each row's position
+  // relative to the stage (so a snapshot written before that existed is judged the same way),
+  // then split off the ones that have moved on.
+  const scope = new Set(stageDeviceIds(run, stage).map(String));
+  const rows = scope.size ? snapshot.rows.filter((row) => scope.has(String(row.deviceId))) : snapshot.rows;
+  const scoped = rows.length === snapshot.rows.length ? snapshot : { ...snapshot, ...tallyRows(rows) };
+  return splitByStagePosition(rescoreSnapshot(stage, scoped));
+}
 
 // ---------------------------------------------------------------------------
 // Life cycle

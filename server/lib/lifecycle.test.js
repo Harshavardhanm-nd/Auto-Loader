@@ -26,6 +26,8 @@ import {
   transitionsInto,
   transitionsFor,
   operationMovement,
+  operationChain,
+  operationForSyncBase,
   operationRole,
   syncStatusBase,
   nextFrom,
@@ -297,5 +299,59 @@ describe('the shape handed to the client', () => {
   test('inferred arrows are declared, so nothing reads as confirmed when it is not', () => {
     assert.ok(described.uncertainties.length > 0);
     for (const u of described.uncertainties) assert.ok(u.why.length > 20);
+  });
+});
+
+/**
+ * Polling has to tell a device that has run ahead of the stage being watched from one still
+ * behind it. On the Asset the two are indistinguishable — each is some `_SYNC_SUCCESS` — so the
+ * ordering comes from here, and getting it backwards either invents successes or hangs a run.
+ */
+describe('the operator chain, which orders polling', () => {
+  test('is walked from the entry of the graph, in the order a device meets it', () => {
+    assert.deepEqual(operationChain(), ['initialLoad', 'shipmentUpdate', 'received']);
+  });
+
+  test('stops where the chain leaves this app — nothing after Received at 3PL is ours', () => {
+    const chain = operationChain();
+    assert.equal(chain[chain.length - 1], 'received');
+    // 1 New is where the customer, installer and network take over.
+    assert.deepEqual(operationMovement('received').to, [1]);
+  });
+
+  test('each link is a real transition out of the previous one, not an assumed sequence', () => {
+    const chain = operationChain();
+    for (let i = 1; i < chain.length; i++) {
+      const previous = operationMovement(chain[i - 1]);
+      const current = operationMovement(chain[i]);
+      assert.ok(
+        current.from.some((stage) => previous.to.includes(stage)),
+        `${chain[i]} does not start where ${chain[i - 1]} ends`
+      );
+    }
+  });
+
+  test('every chain operation can actually be polled, or ordering it is pointless', () => {
+    for (const operation of operationChain()) {
+      assert.ok(syncStatusBase(operation), `${operation} has no Sync_Status__c base`);
+    }
+  });
+
+  test('a sync base maps back to the operation that wrote it', () => {
+    for (const operation of operationChain()) {
+      assert.equal(operationForSyncBase(syncStatusBase(operation)), operation);
+    }
+  });
+
+  test('the $comment entry in the sync map is not mistaken for a status', () => {
+    assert.equal(operationForSyncBase('$comment'), null);
+    assert.equal(operationForSyncBase('SOMETHING_UNMODELLED'), null);
+  });
+
+  test('dataUpdate moves no device, so it is deliberately off the chain', () => {
+    assert.equal(operationMovement('dataUpdate'), null);
+    assert.ok(!operationChain().includes('dataUpdate'));
+    // It is still pollable — it just cannot be ordered against the others.
+    assert.equal(syncStatusBase('dataUpdate'), 'DATA_UPDATE');
   });
 });

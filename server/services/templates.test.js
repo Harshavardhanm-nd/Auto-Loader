@@ -17,6 +17,7 @@ import os from 'node:os';
 
 import { buildCsv, planGeneratedRows, planExistingRows, formatDate } from './csv-builder.js';
 import { allocateSeries, primarySeriesOf, validateRows, resetCursor } from './id-generator.js';
+import { duplicateSendReason } from './validator.js';
 import { loadTemplates, getTemplate } from '../lib/config.js';
 import { hasBom, lineEndingStats, assertCsvBytes, formatSerialNumberForCsv } from '../lib/bytes.js';
 
@@ -348,8 +349,62 @@ describe('id allocation', () => {
     });
 
     assert.equal(result.rows[0].serial_number, '500002', 'moved past both taken ids');
-    assert.equal(queries, 2, 'one query, then one retry — not a reroll loop');
+    assert.equal(queries, 1, 'the lookahead span covers the collisions and the free run after them');
     assert.ok(result.collisions.length > 0);
+  });
+
+  test('a dense block of taken ids is cleared without exhausting the attempts', async () => {
+    // What the real org looks like: every descriptor's sampleStart is an id from a sheet that
+    // was already loaded, so a fresh counter opens on top of that whole batch.
+    const series = { serial_number: { type: 'numeric', digits: 9, sampleStart: '401130100' } };
+    const taken = new Set();
+    for (let i = 401130100; i <= 401130137; i++) taken.add(String(i));
+    let queries = 0;
+
+    const result = await allocateSeries({
+      ...fresh('dense-test', series),
+      count: 2,
+      checkTaken: async (ids) => {
+        queries++;
+        return ids.filter((id) => taken.has(id));
+      },
+    });
+
+    assert.equal(result.rows[0].serial_number, '401130138', 'landed on the first free id past the block');
+    assert.equal(result.attempts, 1, 'one wide probe, not a crawl');
+    assert.equal(queries, 1);
+  });
+
+  test('a failed allocation still advances the counter, so a retry does not repeat it', async () => {
+    // Everything within reach is taken. The attempt fails, but the ground it rejected is
+    // genuinely occupied, so the next call must resume past it rather than re-walk it.
+    const series = { serial_number: { type: 'numeric', digits: 9, sampleStart: '700000000' } };
+    const windows = [];
+
+    const attempt = () =>
+      allocateSeries({
+        env: 'exhaust-test',
+        templateId: 'exhaust-test',
+        series,
+        count: 2,
+        checkTaken: async (ids) => {
+          windows.push(Number(ids[0]));
+          return ids; // every probed id is taken
+        },
+      });
+
+    for (const [name, def] of Object.entries(series)) resetCursor('exhaust-test', 'exhaust-test', name, def);
+
+    await assert.rejects(attempt(), /Could not find 2 free ids/);
+    const firstRun = [...windows];
+    windows.length = 0;
+
+    await assert.rejects(attempt(), /Could not find 2 free ids/);
+
+    assert.ok(
+      windows[0] > firstRun[firstRun.length - 1],
+      `retry resumed at ${windows[0]}, past the ${firstRun[firstRun.length - 1]} the first run reached`
+    );
   });
 
   test('a series refuses to overflow its digit width', async () => {
@@ -510,5 +565,84 @@ describe('guard rails', () => {
     assert.equal(formatDate(d, 'YYYY-MM-DD'), '2026-05-20');
     assert.equal(formatDate(d, 'DD/MM/YY'), '20/05/26');
     assert.equal(formatDate(d, 'DD-MM-YYYY'), '20-05-2026');
+  });
+});
+
+/**
+ * The duplicate-send guard.
+ *
+ * Its job is stopping a *device* being loaded twice, which is not the same as stopping a key
+ * being reused. Half a batch pushed forward, then the other half, is two legitimate emails to
+ * one mailbox; refusing the second stalls the flow with no way past but force.
+ */
+describe('duplicate send detection', () => {
+  const sent = (ids, extra = {}) => ({
+    ok: true,
+    to: 'Asset-Shipped-From-MFR-Testing@netradyne.com',
+    sentAt: '2026-08-07T10:00:00.000Z',
+    deviceIds: ids,
+    ...extra,
+  });
+  const file = (ids) => ({ filename: 'Shipment_Update_DHUB_RTS120011.csv', deviceIds: ids });
+
+  test('nothing sent yet is never a duplicate', () => {
+    assert.equal(duplicateSendReason({ artifact: file(['1', '2']) }), null);
+  });
+
+  test('the other half of a batch is a new send, not a repeat', () => {
+    const reason = duplicateSendReason({
+      currentSend: undefined,
+      archivedSends: [sent(['1'])],
+      artifact: file(['2']),
+    });
+    assert.equal(reason, null, 'device 2 has never been sent for this operation');
+  });
+
+  test('the same device again is refused, and named', () => {
+    const reason = duplicateSendReason({ currentSend: sent(['1']), artifact: file(['1']) });
+    assert.match(reason, /already sent for this operation/);
+    assert.match(reason, /\b1\b/);
+  });
+
+  test('a partial overlap is refused — one repeated device is still a double load', () => {
+    const reason = duplicateSendReason({
+      archivedSends: [sent(['1', '2'])],
+      artifact: file(['2', '3']),
+    });
+    assert.match(reason, /1 device\(s\)/);
+    assert.match(reason, /\b2\b/);
+  });
+
+  test('every superseded send counts, not just the most recent', () => {
+    const reason = duplicateSendReason({
+      archivedSends: [sent(['1']), sent(['2'])],
+      currentSend: sent(['3']),
+      artifact: file(['1']),
+    });
+    assert.match(reason, /already sent/, 'the first send must still block, two regenerations later');
+  });
+
+  test('an unknown device list falls back to blocking, never to allowing', () => {
+    // Records written before artifacts carried ids. Refusing a legitimate send is recoverable;
+    // a silent double load is not.
+    const noIdsOnSend = duplicateSendReason({
+      currentSend: sent(undefined),
+      artifact: file(['1']),
+    });
+    assert.match(noIdsOnSend, /cannot be checked for overlap/);
+
+    const noIdsOnFile = duplicateSendReason({
+      currentSend: sent(['1']),
+      artifact: { filename: 'x.csv', deviceIds: [] },
+    });
+    assert.match(noIdsOnFile, /cannot be checked for overlap/);
+  });
+
+  test('a send that failed does not block a retry', () => {
+    const reason = duplicateSendReason({
+      currentSend: { ...sent(['1']), ok: false },
+      artifact: file(['1']),
+    });
+    assert.equal(reason, null);
   });
 });

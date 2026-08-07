@@ -2,6 +2,7 @@ import express from 'express';
 import {
   startLogin,
   submitMfaCode,
+  revealBrowser,
   describeAttempt,
   cancelLogin,
   describeSession,
@@ -10,6 +11,7 @@ import {
   saveSessionManually,
 } from '../services/sf-session.js';
 import { verifyConnection } from '../services/sf-client.js';
+import { auditSessions, lastAudit } from '../services/session-audit.js';
 import { refreshSessionSilently } from '../services/sf-session.js';
 import {
   setSmtpCredentials,
@@ -102,10 +104,31 @@ authRouter.get('/environments', (req, res) => {
 
 authRouter.get('/session', (req, res) => {
   const env = req.query.env || 'testing';
+  const audit = lastAudit();
   res.json({
     salesforce: describeSession(env),
     smtp: describeSmtp(env),
+    // What the boot-time check found. Salesforce state is already reflected in describeSession
+    // (an expired sid was retired by the audit itself); this is here for the mail verdict, which
+    // nothing else can determine without launching a browser.
+    startupCheck: audit
+      ? {
+          finishedAt: audit.finishedAt,
+          salesforce: audit.salesforce.find((s) => s.env === env) ?? null,
+          mail: audit.mail,
+          needsAttention: audit.needsAttention,
+        }
+      : null,
   });
+});
+
+/** Re-run the boot-time session check on demand. */
+authRouter.post('/session/audit', async (req, res, next) => {
+  try {
+    res.json(await auditSessions({ outlook: req.body?.outlook !== false }));
+  } catch (err) {
+    next(err);
+  }
 });
 
 authRouter.post('/session/verify', async (req, res, next) => {
@@ -170,6 +193,15 @@ authRouter.post('/login/:attemptId/mfa', async (req, res, next) => {
   try {
     const result = await submitMfaCode(req.params.attemptId, req.body?.code);
     res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Promote a background login to a visible window when it hits a step it cannot drive. */
+authRouter.post('/login/:attemptId/reveal', (req, res, next) => {
+  try {
+    res.json(revealBrowser(req.params.attemptId));
   } catch (err) {
     next(err);
   }

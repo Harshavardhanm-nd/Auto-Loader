@@ -155,6 +155,50 @@ export function operationRole(operation) {
   return loadLifecycle().operationRoles[operation] ?? null;
 }
 
+/**
+ * The operations this app sends, in the order a device meets them, walked from the entry of the
+ * graph: initialLoad → shipmentUpdate → received.
+ *
+ * Derived rather than listed, so it stays true if a transition is corrected in lifecycle.json.
+ * The walk stops where the chain leaves this app's hands — after Received at 3PL every arrow is
+ * driven by the customer, the installer or the network, so there is no "next" of ours to order.
+ *
+ * This is what lets polling tell a device that has run *ahead* of the stage being watched from
+ * one that is still *behind* it. Both look identical otherwise: each carries some `_SYNC_SUCCESS`.
+ */
+export function operationChain() {
+  const model = loadLifecycle();
+  if (!model.operationChainCache) {
+    const nextFrom = (stage) =>
+      model.transitions.find((t) => t.from === stage && t.operation);
+
+    const chain = [];
+    const seen = new Set();
+    for (let step = nextFrom(null); step && !seen.has(step.operation); step = nextFrom(step.to)) {
+      seen.add(step.operation);
+      chain.push(step.operation);
+    }
+    model.operationChainCache = chain;
+  }
+  return model.operationChainCache;
+}
+
+/**
+ * Which operation wrote a given `Sync_Status__c` base, e.g. SHIPMENT_UPDATE → shipmentUpdate.
+ * The `$comment` entry in the map holds an array, so only string values are real.
+ */
+export function operationForSyncBase(base) {
+  const model = loadLifecycle();
+  if (!model.syncBaseCache) {
+    model.syncBaseCache = Object.fromEntries(
+      Object.entries(model.syncStatus)
+        .filter(([, value]) => typeof value === 'string')
+        .map(([operation, value]) => [value, operation])
+    );
+  }
+  return model.syncBaseCache[base] ?? null;
+}
+
 /** Sync_Status__c base, or null when no status is known for this operation. */
 export function syncStatusBase(operation) {
   return loadLifecycle().syncStatus[operation] ?? null;

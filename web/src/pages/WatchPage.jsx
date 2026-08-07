@@ -16,17 +16,33 @@ import { Badge, Callout, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spin
  * A settled stage is not the end. The same devices carry on through the chart, so the panel at
  * the bottom answers the question that actually follows: what moves them next, and is it mine.
  */
-export default function WatchPage({ runId, run, refreshRun, goto, onError, setReviewOperation }) {
+export default function WatchPage({
+  runId,
+  run,
+  refreshRun,
+  goto,
+  onError,
+  setReviewOperation,
+  setActiveOperation,
+}) {
   const [stage, setStage] = React.useState('initialLoad');
   const [poll, setPoll] = React.useState(null);
   const [busy, setBusy] = React.useState(null);
   const [selected, setSelected] = React.useState(new Set());
+  // Devices that have gone on to a later operation are hidden by default: this tab is about the
+  // devices at this stage. The send's own record is one click away, never lost.
+  const [showMovedOn, setShowMovedOn] = React.useState(false);
   const [model, setModel] = React.useState(null);
   const [position, setPosition] = React.useState(null);
 
   React.useEffect(() => {
     api.lifecycle().then(setModel).catch(() => setModel(null));
   }, []);
+
+  // The stage being watched is the operation on screen, so the Runbar counts its devices.
+  React.useEffect(() => {
+    setActiveOperation(stage);
+  }, [stage, setActiveOperation]);
 
   const load = React.useCallback(async () => {
     try {
@@ -63,7 +79,14 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError, setRe
 
   const stages = pollableStages(model);
   const stageMeta = stages.find((s) => s.id === stage) ?? { id: stage, label: stage, success: null };
-  const snapshot = poll?.snapshot;
+  const fullSnapshot = poll?.snapshot;
+  // `atStage` is present only when some devices have moved past; the server tallies both sides
+  // with the same arithmetic, so the headline counts always match the rows underneath them.
+  const movedOn = fullSnapshot?.movedOn ?? [];
+  const snapshot =
+    !showMovedOn && fullSnapshot?.atStage
+      ? { ...fullSnapshot, ...fullSnapshot.atStage }
+      : fullSnapshot;
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
 
@@ -236,6 +259,33 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError, setRe
               </div>
             </div>
           </Sheet>
+
+          {movedOn.length ? (
+            <Callout
+              tone="info"
+              title={
+                showMovedOn
+                  ? `Showing all ${fullSnapshot.counts.total} device(s) sent for ${stageMeta.label.toLowerCase()}`
+                  : `${movedOn.length} device(s) have moved past ${stageMeta.label.toLowerCase()}`
+              }
+            >
+              <div className="small">
+                {showMovedOn
+                  ? 'Including devices that have since gone further. This is the record of what the ' +
+                    'email actually carried.'
+                  : 'They are further along the chain now, so they appear under their own stage ' +
+                    'instead. The counts above cover only the devices still here.'}
+              </div>
+              <div className="mono small break" style={{ marginTop: '0.4rem' }}>
+                {movedOn.map((d) => `${d.deviceId} → ${d.syncStatus}`).join(' · ')}
+              </div>
+              <div className="btn-row" style={{ marginTop: '0.5rem' }}>
+                <button className="btn quiet small" onClick={() => setShowMovedOn((v) => !v)}>
+                  {showMovedOn ? 'Show only devices at this stage' : 'Show everything that was sent'}
+                </button>
+              </div>
+            </Callout>
+          ) : null}
 
           {snapshot.anyFailed ? (
             <Callout tone="fail" title={`${snapshot.failedDeviceIds.length} device(s) failed to sync`}>

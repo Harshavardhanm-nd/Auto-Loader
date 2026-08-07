@@ -419,6 +419,55 @@ export function summariseChecks(groups) {
   };
 }
 
+/**
+ * Why sending this file would be a double load, or null if it is genuinely new.
+ *
+ * The thing worth preventing is a *device* being loaded twice, not a key being reused. Half a
+ * batch pushed to shipment update, then the other half, is two different files to the same
+ * mailbox and both must go — the guard used to key on "<operation>:<family>" alone and refused
+ * the second as a repeat of the first, with no way past it but force.
+ *
+ * So the test is whether any device in this file has already been sent for this operation,
+ * counting superseded sends as well as the current one. When either side's device list is
+ * unknown — records written before artifacts carried ids — it falls back to the old, blunt
+ * answer: a send record for this key means blocked. Refusing a legitimate send is recoverable;
+ * a silent double load is not.
+ *
+ * @param {object} args
+ * @param {object} [args.currentSend]  run.sends[key], if the current file has been sent
+ * @param {object[]} [args.archivedSends]  run.sendHistory[key] — sends superseded by regeneration
+ * @param {object} args.artifact       the file about to go out
+ */
+export function duplicateSendReason({ currentSend, archivedSends = [], artifact }) {
+  const priorSends = [...archivedSends, ...(currentSend?.ok ? [currentSend] : [])];
+  if (!priorSends.length) return null;
+
+  const scopeKnown = artifact.deviceIds?.length && priorSends.every((s) => s.deviceIds?.length);
+  if (!scopeKnown) {
+    // Say plainly that this is uncertainty, not a detected repeat. Claiming "the same file was
+    // already sent" when the file demonstrably covers different devices sends the operator
+    // looking for a duplicate that does not exist, and makes forcing feel reckless when it is
+    // in fact the right call.
+    const latest = priorSends[priorSends.length - 1];
+    return (
+      `${artifact.filename} was sent to ${latest.to} at ${latest.sentAt}, and that record does ` +
+      'not list which devices it carried — so this cannot be checked for overlap. If this file ' +
+      'covers devices that have not been sent for this operation, force it; if it repeats any ' +
+      'of them, do not.'
+    );
+  }
+
+  const alreadySent = new Set(priorSends.flatMap((s) => s.deviceIds).map(String));
+  const repeats = artifact.deviceIds.filter((id) => alreadySent.has(String(id)));
+  if (!repeats.length) return null;
+
+  return (
+    `${repeats.length} device(s) in ${artifact.filename} were already sent for this operation: ` +
+    `${repeats.slice(0, 8).join(', ')}${repeats.length > 8 ? ` (+${repeats.length - 8} more)` : ''}. ` +
+    'Loading them again is a double load. Pass force to override.'
+  );
+}
+
 export function artifactPreview(artifact, maxBytes = 512) {
   return {
     filename: artifact.filename,

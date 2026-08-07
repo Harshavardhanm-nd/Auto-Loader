@@ -8,6 +8,7 @@
 
 import { buildRow, encodeCsv, assertCsvBytes, formatSerialNumberForCsv } from '../lib/bytes.js';
 import { isTemplateUsable } from '../lib/config.js';
+import { primarySeriesOf } from './id-generator.js';
 
 /**
  * Date rendering. Templates default to the form their column name advertises
@@ -149,7 +150,26 @@ export function buildCsv(template, { trackingId, fields = {}, rows, now = new Da
     buffer,
     header,
     rowCount: dataRows.length,
+    // Which devices this file actually covers. Derived from the rows that were written rather
+    // than from the run, so it cannot drift from the bytes: a shipment update generated for a
+    // subset lists that subset, and nothing downstream has to re-derive it and get it wrong.
+    deviceIds: deviceIdsOf(template, rows),
   };
+}
+
+/**
+ * The primary device id of each row.
+ *
+ * Two row shapes reach here: rows carrying ids this run minted (`generated`), and rows acting on
+ * devices an earlier run loaded (`existing`). Templates of the second kind declare no generated
+ * column, so `primarySeriesOf` returns null for them and `existing.device_id` is the id.
+ */
+function deviceIdsOf(template, rows) {
+  const primary = primarySeriesOf(template);
+  return rows
+    .map((row) => row.existing?.device_id ?? (primary ? row.generated?.[primary] : null))
+    .filter(Boolean)
+    .map(String);
 }
 
 export function renderFilename(pattern, values) {
