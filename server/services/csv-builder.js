@@ -100,7 +100,7 @@ function resolveSource(source, ctx, column, template) {
  * @param {Date}   [args.now]
  * @returns {{filename, uploadAs, buffer, header, rowCount, template}}
  */
-export function buildCsv(template, { trackingId, fields = {}, rows, now = new Date() }) {
+export function buildCsv(template, { trackingId, fields = {}, rows, now = new Date(), family = '' }) {
   if (!isTemplateUsable(template)) {
     throw new Error(
       `Template "${template.id}" has status "${template.status}" and cannot be generated. ` +
@@ -144,7 +144,7 @@ export function buildCsv(template, { trackingId, fields = {}, rows, now = new Da
 
   return {
     template: template.id,
-    filename: renderFilename(template.filenamePattern, { trackingId }),
+    filename: renderFilename(template.filenamePattern, { trackingId, family }),
     uploadAs: template.uploadAs ?? null,
     buffer,
     header,

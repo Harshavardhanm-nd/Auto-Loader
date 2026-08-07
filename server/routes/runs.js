@@ -10,7 +10,7 @@ import {
   loadArtifact,
   deleteRun,
 } from '../services/run-store.js';
-import { allocateSeries, describeCursors, resetCursor, primarySeriesOf } from '../services/id-generator.js';
+import { allocateSeries, describeCursors, resetCursor, setCursor, primarySeriesOf } from '../services/id-generator.js';
 import { buildCsv, planGeneratedRows, planWizardRows, planExistingRows } from '../services/csv-builder.js';
 import {
   findTakenDeviceIds,
@@ -231,6 +231,24 @@ runsRouter.get('/:runId/cursors', (req, res, next) => {
   }
 });
 
+runsRouter.post('/:runId/cursors/set', (req, res, next) => {
+  try {
+    const run = getRun(req.params.runId);
+    const { templateId, seriesName, value } = req.body ?? {};
+    if (!templateId || !seriesName || value == null) throw Object.assign(new Error('templateId, seriesName and value required'), { status: 400 });
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) throw Object.assign(new Error('value must be a non-negative number'), { status: 400 });
+    const template = getTemplate(templateId);
+    const def = template.series?.[seriesName];
+    if (!def) throw Object.assign(new Error(`Unknown series "${seriesName}" on "${templateId}"`), { status: 400 });
+    if (def.digits && n > (10 ** def.digits - 1)) throw Object.assign(new Error(`Value exceeds ${def.digits}-digit limit`), { status: 400 });
+    setCursor(run.env, templateId, seriesName, n);
+    res.json({ set: true, value: n });
+  } catch (err) {
+    next(err);
+  }
+});
+
 runsRouter.post('/:runId/cursors/reset', (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
@@ -371,6 +389,12 @@ runsRouter.post('/:runId/generate', (req, res, next) => {
     const operation = req.body?.operation ?? run.operation;
     if (!loadOperations()[operation]) throw new Error(`Unknown operation "${operation}".`);
 
+    // Optional subset of device ids — used when triggering shipmentUpdate from the Watch page.
+    const deviceIdsFilter =
+      Array.isArray(req.body?.deviceIds) && req.body.deviceIds.length > 0
+        ? new Set(req.body.deviceIds.map(String))
+        : null;
+
     const built = [];
     const blocked = [];
 
@@ -378,13 +402,17 @@ runsRouter.post('/:runId/generate', (req, res, next) => {
     // The received sheet is identical across families and lists every device id in the run.
     if (isSharedOperation(operation)) {
       const template = findTemplate(SHARED_FAMILY, operation);
-      const ids = runDeviceIds(run);
+      const allIds = runDeviceIds(run);
+      const ids = deviceIdsFilter ? allIds.filter((id) => deviceIdsFilter.has(String(id))) : allIds;
       if (!ids.length) throw new Error('Allocate ids before generating this operation.');
 
+      // Use the run's family name in the filename; for mixed runs take the first group.
+      const familyLabel = run.groups[0]?.family?.toUpperCase() ?? 'SHARED';
       const artifact = buildCsv(template, {
         trackingId: run.trackingId,
         fields: run.sharedFields ?? {},
         rows: planExistingRows(ids),
+        family: familyLabel,
       });
       built.push(saveArtifact(run.runId, artifactKey(operation, SHARED_FAMILY), artifact));
 
@@ -418,9 +446,26 @@ runsRouter.post('/:runId/generate', (req, res, next) => {
         continue;
       }
 
-      const rows = template.reusesExistingDevices
-        ? planExistingRows(runDeviceIds(run))
-        : planGeneratedRows(group.lines);
+      const allDeviceIds = runDeviceIds(run);
+      const deviceIds = deviceIdsFilter
+        ? allDeviceIds.filter((id) => deviceIdsFilter.has(String(id)))
+        : allDeviceIds;
+      let rows;
+      if (template.reusesExistingDevices) {
+        rows = planExistingRows(deviceIds);
+      } else {
+        const allRows = planGeneratedRows(group.lines);
+        // When a subset is requested, keep only rows whose primary id is in the filter.
+        if (deviceIdsFilter) {
+          const primary = group.primarySeries ?? primarySeriesOf(template);
+          rows = allRows.filter((r) => {
+            const id = primary ? r.generated[primary] : Object.values(r.generated)[0];
+            return deviceIdsFilter.has(String(id));
+          });
+        } else {
+          rows = allRows;
+        }
+      }
 
       const artifact = buildCsv(template, {
         trackingId: run.trackingId,

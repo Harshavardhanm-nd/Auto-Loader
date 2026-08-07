@@ -16,7 +16,7 @@
     "lineEnding": "\r\n",
     "trailingNewline": false
   },
-  "filenamePattern": "Received Load {trackingId}.csv",
+  "filenamePattern": "Received_At_3PL_{family}_{trackingId}.csv",
   "series": {},
   "defaults": {
     "shipment_to_3pl": "DCL",

@@ -9,7 +9,7 @@ import { Badge, Callout, PageHead, Segmented, Sheet } from '../components/ui.jsx
  * destination mailbox is the loudest thing on this screen because it is the only thing that
  * tells the parser which operation a file represents.
  */
-export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
+export default function ReviewPage({ runId, run, refreshRun, goto, onError, reviewOperation, setReviewOperation }) {
   const [operation, setOperation] = React.useState(null);
   const [operations, setOperations] = React.useState(null);
   const [validation, setValidation] = React.useState(null);
@@ -19,6 +19,14 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError }) {
   const [blocked, setBlocked] = React.useState([]);
 
   const activeOperation = operation ?? run?.operation ?? 'initialLoad';
+
+  // When WatchPage sends us here with a pre-selected operation, apply it once then clear.
+  React.useEffect(() => {
+    if (reviewOperation) {
+      setOperation(reviewOperation);
+      setReviewOperation(null);
+    }
+  }, [reviewOperation, setReviewOperation]);
 
   const loadOperations = React.useCallback(() => {
     api.operations(runId).then((d) => setOperations(d.operations)).catch(onError);

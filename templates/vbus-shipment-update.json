@@ -1,18 +1,19 @@
 {
-  "id": "vbus-initial-load",
-  "label": "VBUS — Initial Load",
+  "id": "vbus-shipment-update",
+  "label": "VBUS — Shipment Update",
   "family": "vbus",
   "familyLabel": "VBUS",
   "kind": "accessory",
-  "operation": "initialLoad",
+  "operation": "shipmentUpdate",
   "status": "verified",
-  "sourceTemplate": "VBUS_Initial_Load RTS120013.csv",
+  "sourceTemplate": "VBUS_Initial_Load RTS120013 (4) 1 (1).csv",
   "bytes": {
     "bom": true,
     "lineEnding": "\r\n",
     "trailingNewline": true
   },
-  "filenamePattern": "Initial_Load_VBUS_{trackingId}.csv",
+  "dateFormat": "DD/MM/YY",
+  "filenamePattern": "Shipment_Update_VBUS_{trackingId}.csv",
   "series": {
     "serial_number": {
       "type": "numeric",
@@ -29,7 +30,7 @@
     "hardware_version": "SA234.1234",
     "software_version": "test_v1",
     "device_region": "US",
-    "sku_number": "VDI2L001",
+    "sku_number": "VDI3N001",
     "shipment_vendor": "CHR",
     "system_pn": "NTSC",
     "batch_number": "batch.00291",
@@ -113,5 +114,9 @@
       "name": "D2C_shipped_date_(YYYY-MM-DD)",
       "source": "today"
     }
+  ],
+  "notes": [
+    "The source sheet writes D2C_shipped_date_(YYYY-MM-DD) as DD/MM/YY (01/02/26) despite the column name. dateFormat is set to DD/MM/YY at the template level so the today source renders accordingly.",
+    "sku_number in the source sheet is VDI3N001, not VDI2L001 as in the initial load — different SKU per operation."
   ]
 }

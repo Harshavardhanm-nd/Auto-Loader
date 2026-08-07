@@ -1,18 +1,18 @@
 {
-  "id": "dhub-initial-load",
-  "label": "Driveri Hub — Initial Load",
+  "id": "dhub-shipment-update",
+  "label": "Driveri Hub — Shipment Update",
   "family": "dhub",
   "familyLabel": "Driveri Hub (DHUBX)",
   "kind": "accessory",
-  "operation": "initialLoad",
+  "operation": "shipmentUpdate",
   "status": "verified",
-  "sourceTemplate": "DHUB_Initial_Load_RTS120011.csv",
+  "sourceTemplate": "DHUB_Shipment_Load_02.csv",
   "bytes": {
     "bom": true,
     "lineEnding": "\r\n",
     "trailingNewline": true
   },
-  "filenamePattern": "Initial_Load_DHUB_{trackingId}.csv",
+  "filenamePattern": "Shipment_Update_DHUB_{trackingId}.csv",
   "series": {
     "driveri_hub_id": {
       "type": "numeric",
@@ -22,12 +22,12 @@
   },
   "defaults": {
     "device_region": "US",
-    "sku_number": "DHUBX",
+    "sku_number": "ACCDR2DHUBX6MC3M",
     "model_number": "NDDVR-300",
     "tv_system_value": "NTSC",
     "shipment_vendor": "CHR",
     "firmware_version": "S21120701.13519",
-    "manufactured_date": "2025-04-01",
+    "manufactured_date": "01/04/25",
     "device_category": "NAMZ",
     "manufacturing_partner": "VVDN",
     "shipment_to_3pl": "DCL",
@@ -110,5 +110,8 @@
       "name": "D2C_shipped_date_(YYYY-MM-DD)",
       "source": "today"
     }
+  ],
+  "notes": [
+    "The source sheet writes manufactured_date as DD/MM/YY (01/04/25) despite the column name advertising YYYY-MM-DD. The default is kept in DD/MM/YY to match the accepted sheet."
   ]
 }

@@ -79,10 +79,13 @@ export const api = {
 
   cursors: (runId) => get(`/api/runs/${runId}/cursors`),
   resetCursors: (runId, family) => post(`/api/runs/${runId}/cursors/reset`, { family }),
+  setCursor: (runId, templateId, seriesName, value) =>
+    post(`/api/runs/${runId}/cursors/set`, { templateId, seriesName, value }),
   allocate: (runId) => post(`/api/runs/${runId}/allocate`, {}),
   checkIds: (runId) => post(`/api/runs/${runId}/check-ids`, {}),
 
-  generate: (runId, operation) => post(`/api/runs/${runId}/generate`, { operation }),
+  generate: (runId, operation, deviceIds) =>
+    post(`/api/runs/${runId}/generate`, { operation, ...(deviceIds ? { deviceIds } : {}) }),
   operations: (runId) => get(`/api/runs/${runId}/operations`),
   preview: (runId, key, maxBytes) =>
     get(`/api/runs/${runId}/preview/${encodeURIComponent(key)}?${q({ maxBytes })}`),

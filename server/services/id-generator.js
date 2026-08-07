@@ -41,7 +41,7 @@ export function peekCursor(env, templateId, seriesName, seriesDef) {
   return Number(seriesDef.sampleStart);
 }
 
-function setCursor(env, templateId, seriesName, value) {
+export function setCursor(env, templateId, seriesName, value) {
   const counters = loadCounters();
   counters[counterKey(env, templateId, seriesName)] = value;
   counters.updatedAt = new Date().toISOString();

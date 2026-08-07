@@ -16,10 +16,11 @@ import { Badge, Callout, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spin
  * A settled stage is not the end. The same devices carry on through the chart, so the panel at
  * the bottom answers the question that actually follows: what moves them next, and is it mine.
  */
-export default function WatchPage({ runId, run, refreshRun, goto, onError }) {
+export default function WatchPage({ runId, run, refreshRun, goto, onError, setReviewOperation }) {
   const [stage, setStage] = React.useState('initialLoad');
   const [poll, setPoll] = React.useState(null);
   const [busy, setBusy] = React.useState(null);
+  const [selected, setSelected] = React.useState(new Set());
   const [model, setModel] = React.useState(null);
   const [position, setPosition] = React.useState(null);
 
@@ -65,6 +66,68 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError }) {
   const snapshot = poll?.snapshot;
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
+
+  // Rows eligible for shipment update: IDMS -2 + fully synced.
+  const shipmentEligibleRows = (snapshot?.rows ?? []).filter(
+    (r) =>
+      stage === 'initialLoad' &&
+      Number(r.idmsStatus) === -2 &&
+      r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS'
+  );
+
+  // Rows eligible for received at 3PL: IDMS -1 + shipment update synced.
+  const receivedEligibleRows = (snapshot?.rows ?? []).filter(
+    (r) =>
+      stage === 'shipmentUpdate' &&
+      Number(r.idmsStatus) === -1 &&
+      r.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS'
+  );
+
+  const eligibleRows = shipmentEligibleRows.length > 0 ? shipmentEligibleRows : receivedEligibleRows;
+
+  const toggleSelect = (deviceId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(deviceId) ? next.delete(deviceId) : next.add(deviceId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (eligibleRows.length > 0 && eligibleRows.every((r) => selected.has(r.deviceId))) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(eligibleRows.map((r) => r.deviceId)));
+    }
+  };
+
+  const sendToShipmentUpdate = async () => {
+    setBusy('shipmentGen');
+    try {
+      await api.generate(runId, 'shipmentUpdate', [...selected]);
+      await refreshRun();
+      setReviewOperation('shipmentUpdate');
+      goto('review');
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendToReceived = async () => {
+    setBusy('receivedGen');
+    try {
+      await api.generate(runId, 'received', [...selected]);
+      await refreshRun();
+      setReviewOperation('received');
+      goto('review');
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const act = async (fn, key) => {
     setBusy(key);
@@ -209,6 +272,16 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError }) {
               <table>
                 <thead>
                   <tr>
+                    {eligibleRows.length > 0 ? (
+                      <th style={{ width: '2rem' }}>
+                        <input
+                          type="checkbox"
+                          title="Select all eligible"
+                          checked={eligibleRows.every((r) => selected.has(r.deviceId))}
+                          onChange={toggleSelectAll}
+                        />
+                      </th>
+                    ) : null}
                     <th className="raw">device_id</th>
                     <th>Sync status</th>
                     <th>Life cycle stage</th>
@@ -218,28 +291,48 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {(snapshot.rows ?? []).map((row) => (
-                    <tr key={row.deviceId}>
-                      <td className="mono">{row.deviceId}</td>
-                      <td>
-                        {row.present ? (
-                          <SyncStatusBadge status={row.syncStatus} />
-                        ) : (
-                          <Badge tone="muted">no asset yet</Badge>
-                        )}
-                      </td>
-                      <td>
-                        <StageCell stage={row.stage} idmsStatus={row.idmsStatus} />
-                      </td>
-                      <td className="small">{row.assetStatus ?? '—'}</td>
-                      <td className="mono small">
-                        {row.cpqOrderNumber ?? <span className="faint">unattached</span>}
-                      </td>
-                      <td className="small muted">
-                        {row.lastModifiedDate ? new Date(row.lastModifiedDate).toLocaleTimeString() : '—'}
-                      </td>
-                    </tr>
-                  ))}
+                  {(snapshot.rows ?? []).map((row) => {
+                    const eligible =
+                      (stage === 'initialLoad' &&
+                        Number(row.idmsStatus) === -2 &&
+                        row.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS') ||
+                      (stage === 'shipmentUpdate' &&
+                        Number(row.idmsStatus) === -1 &&
+                        row.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS');
+                    return (
+                      <tr key={row.deviceId}>
+                        {eligibleRows.length > 0 ? (
+                          <td>
+                            {eligible ? (
+                              <input
+                                type="checkbox"
+                                checked={selected.has(row.deviceId)}
+                                onChange={() => toggleSelect(row.deviceId)}
+                              />
+                            ) : null}
+                          </td>
+                        ) : null}
+                        <td className="mono">{row.deviceId}</td>
+                        <td>
+                          {row.present ? (
+                            <SyncStatusBadge status={row.syncStatus} />
+                          ) : (
+                            <Badge tone="muted">no asset yet</Badge>
+                          )}
+                        </td>
+                        <td>
+                          <StageCell stage={row.stage} idmsStatus={row.idmsStatus} />
+                        </td>
+                        <td className="small">{row.assetStatus ?? '—'}</td>
+                        <td className="mono small">
+                          {row.cpqOrderNumber ?? <span className="faint">unattached</span>}
+                        </td>
+                        <td className="small muted">
+                          {row.lastModifiedDate ? new Date(row.lastModifiedDate).toLocaleTimeString() : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -250,6 +343,33 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError }) {
               <code>CPQ_Order__c</code> lookup is set by the wizard, not by either email.
             </p>
           </Sheet>
+
+          {selected.size > 0 ? (
+            <Sheet>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                <span className="small">
+                  <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
+                </span>
+                {receivedEligibleRows.length > 0 ? (
+                  <button
+                    className="btn small"
+                    disabled={busy === 'receivedGen'}
+                    onClick={sendToReceived}
+                  >
+                    {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
+                  </button>
+                ) : (
+                  <button
+                    className="btn small"
+                    disabled={busy === 'shipmentGen'}
+                    onClick={sendToShipmentUpdate}
+                  >
+                    {busy === 'shipmentGen' ? 'Generating…' : 'Generate Shipment Update CSV & Go to Review'}
+                  </button>
+                )}
+              </div>
+            </Sheet>
+          ) : null}
         </>
       ) : (
         <Sheet>
