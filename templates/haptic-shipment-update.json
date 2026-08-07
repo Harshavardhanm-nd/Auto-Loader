@@ -12,7 +12,7 @@
     "lineEnding": "\r\n",
     "trailingNewline": false
   },
-  "filenamePattern": "Haptic_Shipment_Update.csv",
+  "filenamePattern": "Shipment_Update_Haptic_{trackingId}.csv",
   "series": {
     "serial_number": {
       "type": "numeric",
@@ -48,7 +48,7 @@
     },
     {
       "name": "sku_number",
-      "source": "field.sku_number"
+      "source": "line.sku"
     },
     {
       "name": "Hardware version",

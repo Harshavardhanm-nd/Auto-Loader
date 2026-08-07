@@ -140,9 +140,7 @@ export function deleteRun(runId) {
 export function saveArtifact(runId, key, artifact) {
   const dir = runOutputDir(runId);
   fs.mkdirSync(dir, { recursive: true });
-  // Two operations can produce the same filename (Haptic sheets carry no tracking id), so the
-  // key namespaces the file on disk.
-  const file = path.join(dir, `${key.replace(/[:/]/g, '_')}__${artifact.filename}`);
+  const file = path.join(dir, artifact.filename);
   fs.writeFileSync(file, artifact.buffer);
 
   updateRun(runId, (run) => {

@@ -10,11 +10,12 @@ import { Badge, Callout, PageHead, Sheet, Stat } from '../components/ui.jsx';
  * persisted counter so each block is contiguous and auditable, and are still checked against
  * the org before anything is sent.
  */
-export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
+export default function IdsPage({ runId, run, refreshRun, goto, onError, setReviewOperation }) {
   const [busy, setBusy] = React.useState(null);
   const [cursors, setCursors] = React.useState(null);
   const [checkResult, setCheckResult] = React.useState(null);
   const [allocation, setAllocation] = React.useState(null);
+  const [setToInputs, setSetToInputs] = React.useState({});
 
   React.useEffect(() => {
     if (runId) api.cursors(runId).then((d) => setCursors(d.cursors)).catch(() => setCursors(null));
@@ -129,21 +130,55 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                   <th>Series</th>
                   <th>Type</th>
                   <th>Next</th>
+                  <th>Set to…</th>
                 </tr>
               </thead>
               <tbody>
                 {cursors.flatMap((c) =>
-                  Object.entries(c.series).map(([name, info]) => (
-                    <tr key={`${c.family}:${name}`}>
-                      <td className="small">{c.familyLabel}</td>
-                      <td className="mono small">{name}</td>
-                      <td className="small muted">
-                        {info.type}
-                        {info.digits ? ` ${info.digits}d` : ''}
-                      </td>
-                      <td className="mono">{info.next}</td>
-                    </tr>
-                  ))
+                  Object.entries(c.series).map(([name, info]) => {
+                    const key = `${c.templateId}:${name}`;
+                    return (
+                      <tr key={key}>
+                        <td className="small">{c.familyLabel}</td>
+                        <td className="mono small">{name}</td>
+                        <td className="small muted">
+                          {info.type}
+                          {info.digits ? ` ${info.digits}d` : ''}
+                        </td>
+                        <td className="mono">{info.next}</td>
+                        <td>
+                          {info.type === 'numeric' ? (
+                            <span style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                              <input
+                                className="mono small"
+                                style={{ width: '11ch', padding: '2px 4px', fontSize: '0.8em' }}
+                                placeholder={info.next}
+                                value={setToInputs[key] ?? ''}
+                                onChange={(e) =>
+                                  setSetToInputs((prev) => ({ ...prev, [key]: e.target.value }))
+                                }
+                              />
+                              <button
+                                className="btn quiet small"
+                                disabled={!setToInputs[key] || busy === `set:${key}`}
+                                onClick={() =>
+                                  act(async () => {
+                                    await api.setCursor(runId, c.templateId, name, Number(setToInputs[key]));
+                                    setSetToInputs((prev) => ({ ...prev, [key]: '' }));
+                                    setCursors((await api.cursors(runId)).cursors);
+                                  }, `set:${key}`)
+                                }
+                              >
+                                Set
+                              </button>
+                            </span>
+                          ) : (
+                            <span className="muted small">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -170,6 +205,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
             onClick={() =>
               act(async () => {
                 await api.generate(runId, run.operation);
+                setReviewOperation(null);
                 goto('review');
               }, 'generate')
             }

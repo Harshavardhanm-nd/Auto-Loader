@@ -12,7 +12,7 @@
     "lineEnding": "\r\n",
     "trailingNewline": false
   },
-  "filenamePattern": "Shipment Update Load_{trackingId}.csv",
+  "filenamePattern": "Shipment_Update_Driveri_{trackingId}.csv",
   "series": {
     "device_id": {
       "type": "numeric",
@@ -58,7 +58,7 @@
     },
     {
       "name": "sku_number",
-      "source": "field.sku_number"
+      "source": "line.sku"
     },
     {
       "name": "model_number",

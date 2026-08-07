@@ -67,13 +67,23 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError, setRe
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
 
-  // Rows eligible for shipment update: must be at IDMS stage -2 and fully synced.
-  const eligibleRows = (snapshot?.rows ?? []).filter(
+  // Rows eligible for shipment update: IDMS -2 + fully synced.
+  const shipmentEligibleRows = (snapshot?.rows ?? []).filter(
     (r) =>
       stage === 'initialLoad' &&
       Number(r.idmsStatus) === -2 &&
       r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS'
   );
+
+  // Rows eligible for received at 3PL: IDMS -1 + shipment update synced.
+  const receivedEligibleRows = (snapshot?.rows ?? []).filter(
+    (r) =>
+      stage === 'shipmentUpdate' &&
+      Number(r.idmsStatus) === -1 &&
+      r.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS'
+  );
+
+  const eligibleRows = shipmentEligibleRows.length > 0 ? shipmentEligibleRows : receivedEligibleRows;
 
   const toggleSelect = (deviceId) => {
     setSelected((prev) => {
@@ -97,6 +107,20 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError, setRe
       await api.generate(runId, 'shipmentUpdate', [...selected]);
       await refreshRun();
       setReviewOperation('shipmentUpdate');
+      goto('review');
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendToReceived = async () => {
+    setBusy('receivedGen');
+    try {
+      await api.generate(runId, 'received', [...selected]);
+      await refreshRun();
+      setReviewOperation('received');
       goto('review');
     } catch (err) {
       onError(err);
@@ -269,9 +293,12 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError, setRe
                 <tbody>
                   {(snapshot.rows ?? []).map((row) => {
                     const eligible =
-                      stage === 'initialLoad' &&
-                      Number(row.idmsStatus) === -2 &&
-                      row.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS';
+                      (stage === 'initialLoad' &&
+                        Number(row.idmsStatus) === -2 &&
+                        row.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS') ||
+                      (stage === 'shipmentUpdate' &&
+                        Number(row.idmsStatus) === -1 &&
+                        row.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS');
                     return (
                       <tr key={row.deviceId}>
                         {eligibleRows.length > 0 ? (
@@ -323,13 +350,23 @@ export default function WatchPage({ runId, run, refreshRun, goto, onError, setRe
                 <span className="small">
                   <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
                 </span>
-                <button
-                  className="btn small"
-                  disabled={busy === 'shipmentGen'}
-                  onClick={sendToShipmentUpdate}
-                >
-                  {busy === 'shipmentGen' ? 'Generating…' : 'Generate Shipment Update CSV & Go to Review'}
-                </button>
+                {receivedEligibleRows.length > 0 ? (
+                  <button
+                    className="btn small"
+                    disabled={busy === 'receivedGen'}
+                    onClick={sendToReceived}
+                  >
+                    {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
+                  </button>
+                ) : (
+                  <button
+                    className="btn small"
+                    disabled={busy === 'shipmentGen'}
+                    onClick={sendToShipmentUpdate}
+                  >
+                    {busy === 'shipmentGen' ? 'Generating…' : 'Generate Shipment Update CSV & Go to Review'}
+                  </button>
+                )}
               </div>
             </Sheet>
           ) : null}

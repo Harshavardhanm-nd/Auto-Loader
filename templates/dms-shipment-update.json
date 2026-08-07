@@ -1,18 +1,18 @@
 {
-  "id": "dms-initial-load",
-  "label": "DMS Camera — Initial Load",
+  "id": "dms-shipment-update",
+  "label": "DMS Camera — Shipment Update",
   "family": "dms",
   "familyLabel": "DMS Camera",
   "kind": "accessory",
-  "operation": "initialLoad",
+  "operation": "shipmentUpdate",
   "status": "verified",
-  "sourceTemplate": "DMS_IntialLoad RTS120014.csv",
+  "sourceTemplate": "DMS_Shipment_Update_01.csv",
   "bytes": {
     "bom": true,
     "lineEnding": "\r\n",
     "trailingNewline": false
   },
-  "filenamePattern": "Initial_Load_DMS_{trackingId}.csv",
+  "filenamePattern": "Shipment_Update_DMS_{trackingId}.csv",
   "series": {
     "serial_number": {
       "type": "numeric",

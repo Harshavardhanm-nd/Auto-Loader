@@ -302,20 +302,39 @@ export async function fetchRecentOrders(env, { limit = 25 } = {}) {
  * Which of these device ids already exist? Asset.Name IS the device_id — that is the join
  * key for everything (spec section 6).
  */
+/** Maps series names declared in templates to their Asset field API name. */
+const SERIES_SF_FIELD = {
+  sim_serial: 'SIM_Serial__c',
+  device_imei: 'Device_IMEI__c',
+};
+
+/**
+ * Check candidate ids against Asset.Name, Asset.SIM_Serial__c and Asset.Device_IMEI__c.
+ * Returns every value that is already taken in any of those fields so the allocator can
+ * skip past it — regardless of which asset or SKU it belongs to.
+ */
 export async function findTakenDeviceIds(env, candidateIds) {
   const ids = [...new Set(candidateIds.map(String))].filter(Boolean);
   if (!ids.length) return [];
 
   const taken = new Set();
-  // Chunked to keep the SOQL statement well under the 100k character limit.
   const CHUNK = 400;
   for (let i = 0; i < ids.length; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK);
+    const inList = soqlInList(chunk);
     const records = await query(
       env,
-      `SELECT Name FROM Asset WHERE Name IN (${soqlInList(chunk)})`
+      `SELECT Name, SIM_Serial__c, Device_IMEI__c
+         FROM Asset
+        WHERE Name IN (${inList})
+           OR SIM_Serial__c IN (${inList})
+           OR Device_IMEI__c IN (${inList})`
     );
-    for (const r of records) taken.add(r.Name);
+    for (const r of records) {
+      if (r.Name) taken.add(r.Name);
+      if (r.SIM_Serial__c) taken.add(r.SIM_Serial__c);
+      if (r.Device_IMEI__c) taken.add(r.Device_IMEI__c);
+    }
   }
   return [...taken];
 }
