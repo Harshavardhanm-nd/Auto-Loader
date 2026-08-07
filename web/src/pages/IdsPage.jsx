@@ -15,6 +15,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError, setRevi
   const [cursors, setCursors] = React.useState(null);
   const [checkResult, setCheckResult] = React.useState(null);
   const [allocation, setAllocation] = React.useState(null);
+  const [resetResult, setResetResult] = React.useState(null);
   const [setToInputs, setSetToInputs] = React.useState({});
 
   React.useEffect(() => {
@@ -84,8 +85,9 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError, setRevi
               disabled={busy === 'reset'}
               onClick={() =>
                 act(async () => {
-                  await api.resetCursors(runId);
+                  const result = await api.resetCursors(runId);
                   setCursors((await api.cursors(runId)).cursors);
+                  setResetResult(result);
                 }, 'reset')
               }
               title="Seed every series back to its template's sample start"
@@ -99,6 +101,17 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError, setRevi
       {allocation?.warning ? (
         <Callout tone="warn" title="Not verified against the org">
           {allocation.warning}
+        </Callout>
+      ) : null}
+
+      {resetResult ? (
+        <Callout tone="ok" title={`${resetResult.series.length} series seeded back to its sample start`}>
+          Each descriptor's <code>sampleStart</code> came from a sheet that was already loaded, so
+          these ids are expected to be taken — allocation steps over the batch rather than
+          stopping on it.
+          <div className="mono small" style={{ marginTop: '0.45rem' }}>
+            {resetResult.series.map((s) => `${s.seriesName} → ${s.next}`).join(' · ')}
+          </div>
         </Callout>
       ) : null}
 

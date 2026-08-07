@@ -44,6 +44,10 @@ export default function App() {
   const [run, setRun] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [reviewOperation, setReviewOperation] = React.useState(null);
+  // Which operation the page in front of you is about. Review and Watch each own an operation
+  // selector; they report it up so the Runbar's Operation and Units describe what is on screen
+  // rather than the run as a whole. Cleared on navigation, so a page without one falls back.
+  const [activeOperation, setActiveOperation] = React.useState(null);
   const [theme, setTheme] = useTheme();
 
   const refreshSession = React.useCallback(
@@ -99,6 +103,9 @@ export default function App() {
 
   const goto = (id) => {
     setError(null);
+    // Reset first; a page that owns an operation re-reports it as it mounts, and one that does
+    // not leaves it null so the Runbar falls back to the run's own operation.
+    setActiveOperation(null);
     setPage(id);
   };
 
@@ -128,6 +135,7 @@ export default function App() {
     startNewRun,
     reviewOperation,
     setReviewOperation,
+    setActiveOperation,
   };
 
   return (
@@ -248,7 +256,7 @@ export default function App() {
       <main className="main">
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
-        <Runbar env={activeEnv?.label ?? env} setup={setup} run={run} />
+        <Runbar env={activeEnv?.label ?? env} setup={setup} run={run} activeOperation={activeOperation} />
 
         <div className="doc" key={page}>
           {page === 'connect' ? <ConnectPage {...shared} /> : null}
@@ -269,33 +277,70 @@ export default function App() {
  * The run's identity, in the same seven fields on every page. Cells start empty
  * and fill in as the run takes shape, so the strip is also the progress record.
  */
-function Runbar({ env, setup, run }) {
-  const units = run
-    ? run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + Number(l.deviceCount || 0), 0), 0)
-    : null;
+function Runbar({ env, setup, run, activeOperation }) {
+  const operation = activeOperation ?? run?.operation ?? setup.operation;
+  const { units, scope } = unitsFor(run, operation);
 
   const cells = [
     ['Environment', env],
-    ['Operation', humanise(run?.operation ?? setup.operation)],
+    ['Operation', humanise(operation)],
     ['Tracking id', run?.trackingId ?? setup.trackingId ?? null],
     ['Order', run?.order?.orderNumber ?? setup.order?.orderNumber ?? null],
     ['Families', run ? run.groups.length : null],
-    ['Units', units],
+    ['Units', units, scope],
     ['State', runState(run)],
   ];
 
   return (
     <div className="runbar">
-      {cells.map(([label, value], i) => (
+      {cells.map(([label, value, title], i) => (
         <div className={`cell${i === cells.length - 1 && run ? ' is-live' : ''}`} key={label}>
           <span className="eyebrow">{label}</span>
-          <span className={`v${value === null || value === '' ? ' empty' : ''}`} title={value ? String(value) : undefined}>
+          <span
+            className={`v${value === null || value === '' ? ' empty' : ''}`}
+            title={title ?? (value ? String(value) : undefined)}
+          >
             {value === null || value === '' ? '—' : value}
           </span>
         </div>
       ))}
     </div>
   );
+}
+
+/**
+ * How many devices the operation on screen covers.
+ *
+ * Once a file exists for that operation it is the authority, because it is what will actually be
+ * sent — a shipment update raised for a subset of the run covers that subset and no more. Before
+ * anything is generated there is nothing to count but the plan, so the run's own device total
+ * stands in. The two can legitimately differ, hence the tooltip saying which one you are reading.
+ */
+function unitsFor(run, operation) {
+  if (!run) return { units: null, scope: undefined };
+
+  const planned = run.groups.reduce(
+    (n, g) => n + g.lines.reduce((m, l) => m + Number(l.deviceCount || 0), 0),
+    0
+  );
+
+  const inFiles = new Set(
+    Object.entries(run.artifacts ?? {})
+      .filter(([key]) => key.startsWith(`${operation}:`))
+      .flatMap(([, artifact]) => artifact.deviceIds ?? [])
+      .map(String)
+  );
+
+  if (!inFiles.size) {
+    return { units: planned, scope: `${planned} device(s) in this run — nothing generated for ${humanise(operation)} yet` };
+  }
+  return {
+    units: inFiles.size,
+    scope:
+      inFiles.size === planned
+        ? `${inFiles.size} device(s) in the ${humanise(operation)} file — the whole run`
+        : `${inFiles.size} of the run's ${planned} device(s) are in the ${humanise(operation)} file`,
+  };
 }
 
 /**

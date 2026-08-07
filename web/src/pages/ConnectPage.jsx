@@ -41,6 +41,8 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
         </Callout>
       ) : null}
 
+      <StartupCheck check={session?.startupCheck} />
+
       <div className="grid-2">
         <SalesforceCard env={env} activeEnv={activeEnv} session={session} refreshSession={refreshSession} onError={onError} />
         <SmtpCard env={env} session={session} refreshSession={refreshSession} onError={onError} />
@@ -96,6 +98,44 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * What the server found when it checked the stored sessions at boot.
+ *
+ * Only worth saying anything when something is wrong: a card already shows "connected", and
+ * repeating "we checked and it is fine" on every page load is noise. The Salesforce half has
+ * usually corrected itself by now — the audit retires a dead sid, so the card below is already
+ * showing the truth — but Outlook cannot self-correct, and a storage state that stopped working
+ * looks identical to one that still does until a send fails.
+ */
+function StartupCheck({ check }) {
+  if (!check) return null;
+
+  const sfExpired = check.salesforce?.state === 'expired';
+  const mailExpired = check.mail?.state === 'expired';
+  if (!sfExpired && !mailExpired) return null;
+
+  return (
+    <Callout tone="warn" title="Stored sessions were checked at startup">
+      <ul style={{ margin: '0.2rem 0 0', paddingLeft: '1.1rem' }}>
+        {sfExpired ? (
+          <li className="small">
+            <strong>Salesforce</strong> — the saved session no longer works
+            {check.salesforce.autoRenews
+              ? ' and could not be renewed from the remembered browser. Log in below.'
+              : '. Log in below.'}
+          </li>
+        ) : null}
+        {mailExpired ? (
+          <li className="small">
+            <strong>Outlook</strong> — the saved sign-in no longer loads the inbox. Sign in again
+            on the Mail card, or a send will fail part-way through.
+          </li>
+        ) : null}
+      </ul>
+    </Callout>
   );
 }
 
@@ -302,9 +342,11 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
           ) : null}
 
           <p className="prose small">
-            A Chromium window opens on{' '}
+            Chromium signs in for you against{' '}
             <span className="mono break">{activeEnv?.loginUrl}</span> — this org's own login page,
-            not the generic sandbox one, which is the only page that offers the SSO button.
+            not the generic sandbox one, which is the only page that offers the SSO button. It runs
+            out of sight; if a verification code is needed you are asked for it here, and a window
+            only opens if it meets a step it cannot drive.
             {sf?.rememberedBrowser
               ? ' This browser is already remembered, so MFA may be skipped.'
               : ' After this, the session renews itself and you should not be asked again.'}
@@ -333,7 +375,8 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                 The longer route: it clicks the SSO button and follows the redirect out to Microsoft
                 Entra, which is several more steps than signing in to Salesforce directly. Kept for
                 accounts that can only get in this way. Fill in your Netradyne account to have the
-                Microsoft form driven too, or leave it blank to sign in yourself.
+                Microsoft form driven in the background too — leave it blank and a window opens for
+                you to sign in yourself, since there is nothing to hand over otherwise.
               </p>
               <div className="field-stack">
                 <Field label="Netradyne account" hint="Optional — leave blank to sign in yourself">
@@ -363,9 +406,10 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
           ) : (
             <>
               <p className="prose small">
-                Driven end to end and stays inside Salesforce — no Microsoft redirect. It stops at
-                one place only: when Salesforce asks to verify your identity, the code box below
-                activates — read the code off your mail or phone and enter it here.
+                Driven end to end in the background and stays inside Salesforce — no Microsoft
+                redirect, no window. It stops at one place only: when Salesforce asks to verify your
+                identity, the code box below activates — read the code off your mail or phone and
+                enter it here.
               </p>
               <div className="field-stack">
                 <Field label="Salesforce username">
@@ -454,13 +498,35 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                   title={
                     attempt.status === 'sso-handoff'
                       ? 'Sign in with SSO in the browser window'
-                      : 'Finish this step in the browser window'
+                      : attempt.canReveal
+                        ? 'This step needs the browser window'
+                        : 'Finish this step in the browser window'
                   }
                 >
                   <div className="small">{attempt.message}</div>
                   {attempt.currentUrl ? (
                     <div className="mono small muted break" style={{ marginTop: '0.4rem' }}>
                       {attempt.currentUrl}
+                    </div>
+                  ) : null}
+                  {attempt.canReveal ? (
+                    <div className="btn-row" style={{ marginTop: '0.55rem' }}>
+                      <button
+                        className="btn small"
+                        disabled={busy}
+                        onClick={async () => {
+                          setBusy(true);
+                          try {
+                            setAttempt(await api.revealLogin(attempt.attemptId));
+                          } catch (err) {
+                            onError(err);
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        Open the browser window
+                      </button>
                     </div>
                   ) : null}
                   <div className="small muted" style={{ marginTop: '0.4rem' }}>

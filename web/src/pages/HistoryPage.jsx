@@ -3,19 +3,27 @@ import { api } from '../api.js';
 import { Badge, PageHead, Sheet } from '../components/ui.jsx';
 
 /**
- * Run history. Device ids that were emailed exist in the org whether or not this app
- * remembers them, so every run is kept until explicitly deleted — this is the record of what
- * was loaded, and the fastest way to answer "what were the ids from that run last Tuesday".
+ * Run history for the environment you are in. Device ids that were emailed exist in the org
+ * whether or not this app remembers them, so every run is kept until explicitly deleted — this
+ * is the record of what was loaded, and the fastest way to answer "what were the ids from that
+ * run last Tuesday".
+ *
+ * The list is scoped to one environment because testing and staging are separate orgs whose
+ * ids look alike: a 10-digit hub id from staging reads exactly like one from testing, and the
+ * only thing distinguishing them was a column you had to remember to check. Switching the
+ * environment in the rail reloads this page against the other org's runs.
  */
-export default function HistoryPage({ setRunId, goto, onError }) {
+export default function HistoryPage({ env, activeEnv, setRunId, goto, onError }) {
   const [runs, setRuns] = React.useState(null);
+  const envLabel = activeEnv?.label ?? env;
 
   const load = React.useCallback(() => {
+    setRuns(null);
     api
-      .runs()
+      .runs(env)
       .then((data) => setRuns(data.runs))
       .catch(onError);
-  }, [onError]);
+  }, [env, onError]);
 
   React.useEffect(load, [load]);
 
@@ -23,8 +31,9 @@ export default function HistoryPage({ setRunId, goto, onError }) {
     <>
       <PageHead eyebrow="Record" title="History">
         <p>
-          Every run, with the device ids it loaded. Deleting a record here removes this app's copy
-          only — whatever was emailed stays in Salesforce.
+          Every run in <strong>{envLabel}</strong>, with the device ids it loaded. Switch
+          environment in the rail to see the other org's record. Deleting here removes this app's
+          copy only — whatever was emailed stays in Salesforce.
         </p>
       </PageHead>
 
@@ -33,17 +42,16 @@ export default function HistoryPage({ setRunId, goto, onError }) {
       ) : runs.length === 0 ? (
         <Sheet>
           <p className="muted small" style={{ margin: 0 }}>
-            No runs yet. Start one from Connect and it will be recorded here.
+            No runs recorded in {envLabel} yet. Start one from Connect and it will appear here.
           </p>
         </Sheet>
       ) : (
-        <Sheet eyebrow={`${runs.length} run(s)`} title="Loaded to date">
+        <Sheet eyebrow={`${runs.length} run(s) · ${envLabel}`} title="Loaded to date">
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Run</th>
-                  <th>Env</th>
                   <th>Operation</th>
                   <th>Tracking</th>
                   <th>Order</th>
@@ -62,7 +70,6 @@ export default function HistoryPage({ setRunId, goto, onError }) {
                       {run.runId}
                       <div className="faint">{new Date(run.createdAt).toLocaleString()}</div>
                     </td>
-                    <td className="small">{run.env}</td>
                     <td className="small">{run.operation}</td>
                     <td className="mono small">{run.trackingId}</td>
                     <td className="mono small">{run.orderNumber ?? <span className="faint">none</span>}</td>

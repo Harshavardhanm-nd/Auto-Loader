@@ -54,6 +54,7 @@ export const api = {
   login: (body) => post('/api/auth/login', body),
   loginStatus: (attemptId) => get(`/api/auth/login/${attemptId}`),
   submitMfa: (attemptId, code) => post(`/api/auth/login/${attemptId}/mfa`, { code }),
+  revealLogin: (attemptId) => post(`/api/auth/login/${attemptId}/reveal`, {}),
   cancelLogin: (attemptId) => post(`/api/auth/login/${attemptId}/cancel`, {}),
   manualSession: (body) => post('/api/auth/session/manual', body),
 
@@ -71,7 +72,7 @@ export const api = {
   order: (env, orderNumber) =>
     get(`/api/catalog/orders/${encodeURIComponent(orderNumber)}?${q({ env })}`),
 
-  runs: () => get('/api/runs'),
+  runs: (env) => get(`/api/runs?${q({ env })}`),
   createRun: (body) => post('/api/runs', body),
   run: (runId) => get(`/api/runs/${runId}`),
   patchRun: (runId, body) => patch(`/api/runs/${runId}`, body),

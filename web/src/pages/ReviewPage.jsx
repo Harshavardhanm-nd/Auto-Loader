@@ -9,7 +9,16 @@ import { Badge, Callout, PageHead, Segmented, Sheet } from '../components/ui.jsx
  * destination mailbox is the loudest thing on this screen because it is the only thing that
  * tells the parser which operation a file represents.
  */
-export default function ReviewPage({ runId, run, refreshRun, goto, onError, reviewOperation, setReviewOperation }) {
+export default function ReviewPage({
+  runId,
+  run,
+  refreshRun,
+  goto,
+  onError,
+  reviewOperation,
+  setReviewOperation,
+  setActiveOperation,
+}) {
   const [operation, setOperation] = React.useState(null);
   const [operations, setOperations] = React.useState(null);
   const [validation, setValidation] = React.useState(null);
@@ -27,6 +36,12 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError, revi
       setReviewOperation(null);
     }
   }, [reviewOperation, setReviewOperation]);
+
+  // Tell the Runbar which operation is on screen, so its Operation and Units describe this file
+  // rather than the run as a whole.
+  React.useEffect(() => {
+    setActiveOperation(activeOperation);
+  }, [activeOperation, setActiveOperation]);
 
   const loadOperations = React.useCallback(() => {
     api.operations(runId).then((d) => setOperations(d.operations)).catch(onError);
@@ -82,14 +97,11 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError, revi
       const result = await api.send(runId, { operation: activeOperation, family, force, autoSend });
 
       // Compose-and-stop: the message is filled in but not sent, so this is not recorded as a
-      // send. The user presses Send in Outlook, then confirms here.
+      // send. The server records it on the run instead, and the panel that asks you to confirm
+      // is rendered from that — so it is still there after a refresh or a trip to another page.
       if (result.composedOnly) {
-        setNotice({
-          tone: 'warn',
-          title: `Composed in Outlook — press Send there, then confirm below`,
-          body: `${result.filename} → ${result.to}. ${result.message}`,
-          confirmFamily: family,
-        });
+        setNotice(null);
+        await refreshRun();
         return;
       }
 
@@ -117,7 +129,6 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError, revi
           tone: 'fail',
           title: 'Not recorded as sent',
           body: result.message,
-          confirmFamily: family,
           allowForce: true,
         });
         return;
@@ -134,6 +145,11 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError, revi
       setBusy(null);
     }
   };
+
+  // A compose window left open for this operation. Held on the run rather than in page state,
+  // so navigating away and back does not lose the fact that a real email is waiting on a Send.
+  const pendingCompose =
+    run.pendingCompose?.operation === activeOperation ? run.pendingCompose : null;
 
   const opMeta = operations?.find((o) => o.id === activeOperation);
   const filesForOperation = Object.entries(run.artifacts ?? {}).filter(([key]) =>
@@ -251,32 +267,64 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError, revi
         </Callout>
       ) : null}
 
+      {/* Rendered from run.pendingCompose, so a message left open in Outlook is still announced
+          after a refresh, a trip to another page, or a server restart. */}
+      {pendingCompose ? (
+        <Callout tone="warn" title="Composed in Outlook — press Send there, then confirm here">
+          <div className="small">
+            <span className="mono">{pendingCompose.filename}</span> →{' '}
+            <span className="mono">{pendingCompose.to}</span>, composed at{' '}
+            {new Date(pendingCompose.composedAt).toLocaleTimeString()}. Nothing is recorded as sent
+            until Sent Items says so.
+          </div>
+          <div className="btn-row" style={{ marginTop: '0.65rem' }}>
+            <button
+              className="btn small"
+              disabled={busy === `confirm:${pendingCompose.family}`}
+              onClick={() => confirmSend(pendingCompose.family, false)}
+            >
+              {busy === `confirm:${pendingCompose.family}`
+                ? 'Checking Sent Items…'
+                : "I've sent it — check Sent Items"}
+            </button>
+            {notice?.allowForce ? (
+              <button
+                className="btn danger small"
+                onClick={() => {
+                  if (window.confirm('Record this as sent without confirming it in Sent Items?')) {
+                    confirmSend(pendingCompose.family, true);
+                  }
+                }}
+              >
+                Record anyway
+              </button>
+            ) : null}
+            <button
+              className="btn quiet small"
+              disabled={busy === 'discard'}
+              onClick={async () => {
+                if (!window.confirm('Discard the compose window? The message will not be sent.')) return;
+                setBusy('discard');
+                setNotice(null);
+                try {
+                  await api.closeMailWindow(runId);
+                  await refreshRun();
+                } catch (err) {
+                  onError(err);
+                } finally {
+                  setBusy(null);
+                }
+              }}
+            >
+              Discard it
+            </button>
+          </div>
+        </Callout>
+      ) : null}
+
       {notice ? (
         <Callout tone={notice.tone} title={notice.title}>
           {notice.body}
-          {notice.confirmFamily ? (
-            <div className="btn-row" style={{ marginTop: '0.65rem' }}>
-              <button
-                className="btn small"
-                disabled={busy === `confirm:${notice.confirmFamily}`}
-                onClick={() => confirmSend(notice.confirmFamily, false)}
-              >
-                {busy === `confirm:${notice.confirmFamily}` ? 'Checking Sent Items…' : "I've sent it — check Sent Items"}
-              </button>
-              {notice.allowForce ? (
-                <button
-                  className="btn danger small"
-                  onClick={() => {
-                    if (window.confirm('Record this as sent without confirming it in Sent Items?')) {
-                      confirmSend(notice.confirmFamily, true);
-                    }
-                  }}
-                >
-                  Record anyway
-                </button>
-              ) : null}
-            </div>
-          ) : null}
         </Callout>
       ) : null}
 
@@ -302,7 +350,14 @@ export default function ReviewPage({ runId, run, refreshRun, goto, onError, revi
               to={familyInfo?.to}
               blockers={familyInfo?.blockers ?? []}
               canSend={validation?.canSend && !busy && (familyInfo?.blockers?.length ?? 0) === 0}
-              busy={busy === `send:${family}`}
+              // Busy covers the confirmation too, not just the send: the compose-and-stop is
+              // still in flight until Sent Items has been checked, and leaving the button live
+              // in between invites a second click that composes the same file again.
+              busy={busy === `send:${family}` || busy === `confirm:${family}`}
+              // Composed, waiting for the operator to press Send in Outlook and confirm here.
+              // Without this the card falls back to its idle label and reads as "nothing
+              // happened", when in fact a message is sitting open in the compose window.
+              awaitingConfirm={pendingCompose?.key === key}
               onSend={(opts) => send(family, opts)}
               transport={validation?.smtp?.transport}
               autoSendDefault={validation?.smtp?.autoSend}
@@ -353,6 +408,7 @@ function FileCard({
   blockers = [],
   canSend,
   busy,
+  awaitingConfirm,
   onSend,
   uploadOnly,
   transport,
@@ -386,10 +442,17 @@ function FileCard({
               </a>
               {alreadySent?.ok ? (
                 <>
-                  <Badge tone="ok">sent {new Date(alreadySent.sentAt).toLocaleTimeString()}</Badge>
+                  {/* The button the operator pressed becomes the answer, rather than vanishing
+                      and leaving a badge elsewhere to be noticed. */}
+                  <button className="btn small" disabled title={`Sent to ${alreadySent.to}`}>
+                    ✓ Sent
+                  </button>
+                  <Badge tone="ok">{new Date(alreadySent.sentAt).toLocaleTimeString()}</Badge>
+                  {/* A re-send composes a second message for a file already sent once, so this
+                      button carries the same lifecycle as the first-time one. */}
                   <button
                     className="btn danger outline small"
-                    disabled={busy}
+                    disabled={busy || awaitingConfirm}
                     onClick={() => {
                       if (
                         window.confirm(
@@ -400,20 +463,26 @@ function FileCard({
                       }
                     }}
                   >
-                    Re-send
+                    {busy ? 'Working…' : awaitingConfirm ? 'Awaiting your Send…' : 'Re-send'}
                   </button>
                 </>
               ) : (
                 <>
                   <button
                     className="btn small"
-                    disabled={!canSend || busy}
+                    disabled={!canSend || busy || awaitingConfirm}
                     onClick={() => onSend({ autoSend: false })}
                     title={outlook ? 'Fills the Outlook compose window and stops for you to review' : undefined}
                   >
-                    {busy ? 'Working…' : outlook ? 'Compose in Outlook' : 'Send'}
+                    {busy
+                      ? 'Working…'
+                      : awaitingConfirm
+                        ? 'Awaiting your Send…'
+                        : outlook
+                          ? 'Compose in Outlook'
+                          : 'Send'}
                   </button>
-                  {outlook ? (
+                  {outlook && !awaitingConfirm ? (
                     <button
                       className="btn danger outline small"
                       disabled={!canSend || busy}
@@ -464,6 +533,8 @@ function FileCard({
         </span>
       </div>
 
+      <DevicesCovered ids={artifact.deviceIds} />
+
       {blockers.length ? (
         <p className="small" style={{ color: 'var(--warn)', margin: '0.6rem 0 0' }}>
           Sending blocked — placeholder config: {blockers.join(', ')}
@@ -482,6 +553,39 @@ function FileCard({
         </div>
       ) : null}
     </Sheet>
+  );
+}
+
+/**
+ * Exactly which devices this file carries.
+ *
+ * An operation raised from the Watch page covers only the units that were ticked, which can be a
+ * fraction of the run — and the run-level counts elsewhere on screen still describe the whole run.
+ * Listing the ids makes the file's own scope unambiguous at the point of sending, which is the
+ * last moment it can be checked.
+ */
+function DevicesCovered({ ids }) {
+  const [expanded, setExpanded] = React.useState(false);
+  if (!ids?.length) return null;
+
+  const shown = expanded ? ids : ids.slice(0, 8);
+  return (
+    <div style={{ marginTop: '0.55rem' }}>
+      <span className="eyebrow">
+        {ids.length} device{ids.length !== 1 ? 's' : ''} in this file
+      </span>
+      <div className="mono small break" style={{ marginTop: '0.25rem' }}>
+        {shown.join(', ')}
+        {!expanded && ids.length > shown.length ? (
+          <>
+            {' '}
+            <button className="btn quiet small" onClick={() => setExpanded(true)}>
+              +{ids.length - shown.length} more
+            </button>
+          </>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

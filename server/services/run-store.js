@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { RUNS_DIR, OUTPUT_DIR, readJson, writeJson } from '../lib/paths.js';
+import { getTemplate } from '../lib/config.js';
 
 function runFile(runId) {
   return path.join(RUNS_DIR, `${runId}.json`);
@@ -63,6 +64,59 @@ export function createRun({ env, operation, trackingId, order, groups, notes = n
 export function getRun(runId) {
   const run = readJson(runFile(runId), null);
   if (!run) throw new Error(`Unknown run "${runId}"`);
+  return backfillArtifactDeviceIds(runId, run);
+}
+
+/**
+ * Which column of a template holds the device id — the generated primary series, or the
+ * existing id for templates that act on devices an earlier run loaded.
+ */
+function idColumnIndex(template) {
+  const generated = template.columns.findIndex((c) => c.source?.startsWith('generated.'));
+  if (generated !== -1) return generated;
+  return template.columns.findIndex((c) => c.source === 'existing.device_id');
+}
+
+/**
+ * Recover `deviceIds` for files generated before artifacts recorded them.
+ *
+ * Until that field existed, nothing stored which devices a given file covered, so anything
+ * needing the answer fell back to the run's full list — which is wrong for any operation raised
+ * over a subset, and is what made a one-device shipment update get watched as the whole run.
+ *
+ * The bytes on disk are the record, so the ids are read back out of them rather than guessed.
+ * Safe to parse naively: `escapeField` refuses commas, quotes and newlines outright, so no field
+ * in any accepted sheet can contain a delimiter.
+ *
+ * Repairs are written back once, so this costs nothing on later reads.
+ */
+function backfillArtifactDeviceIds(runId, run) {
+  const artifacts = run.artifacts ?? {};
+  let repaired = false;
+
+  for (const artifact of Object.values(artifacts)) {
+    if (artifact.deviceIds || !artifact.path) continue;
+    try {
+      const column = idColumnIndex(getTemplate(artifact.template));
+      if (column === -1) continue;
+      const text = fs.readFileSync(artifact.path, 'utf8').replace(/^﻿/, '');
+      artifact.deviceIds = text
+        .split(/\r\n|\n/)
+        .slice(1)
+        .filter(Boolean)
+        .map((line) => line.split(',')[column]?.trim())
+        .filter(Boolean);
+      repaired = true;
+    } catch {
+      // The file may have been cleaned up. Leaving deviceIds unset keeps the old whole-run
+      // fallback, which is no worse than before.
+    }
+  }
+
+  if (repaired) {
+    run.updatedAt = new Date().toISOString();
+    writeJson(runFile(runId), run);
+  }
   return run;
 }
 
@@ -81,13 +135,20 @@ export function appendEvent(runId, event, detail = null) {
   });
 }
 
-export function listRuns({ limit = 50 } = {}) {
+/**
+ * Runs, newest first. `env` narrows to one environment — testing and staging are different
+ * orgs with different device ids, so mixing their histories invites reading a staging id as
+ * a testing one. Filtering happens before the limit, so asking for 50 testing runs returns
+ * 50 testing runs rather than whatever survives a mixed cut.
+ */
+export function listRuns({ limit = 50, env = null } = {}) {
   if (!fs.existsSync(RUNS_DIR)) return [];
   return fs
     .readdirSync(RUNS_DIR)
     .filter((f) => f.endsWith('.json'))
     .map((f) => readJson(path.join(RUNS_DIR, f), null))
     .filter(Boolean)
+    .filter((run) => !env || run.env === env)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
     .slice(0, limit)
     .map(summariseRun);
@@ -133,6 +194,18 @@ export function deleteRun(runId) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Do two artifacts cover exactly the same devices? Unknown on either side means "assume not the
+ * same", which archives the old send record — the cautious direction, since the guard then still
+ * has its ids and can catch a repeat.
+ */
+function sameDeviceSet(a, b) {
+  if (!a?.length || !b?.length) return false;
+  if (a.length !== b.length) return false;
+  const left = new Set(a.map(String));
+  return b.every((id) => left.has(String(id)));
+}
+
+/**
  * Store one generated file. Keyed by "<operation>:<family>" rather than by template id,
  * because the same family can hold a generated file for several operations at once and each
  * one is a separate email.
@@ -144,12 +217,40 @@ export function saveArtifact(runId, key, artifact) {
   fs.writeFileSync(file, artifact.buffer);
 
   updateRun(runId, (run) => {
+    // A send record describes one specific file. Regenerating this key for a different set of
+    // devices — the second half of a batch pushed forward separately — leaves that record
+    // describing something that is no longer on disk, and the duplicate-send guard then reads
+    // it as "this file already went" and refuses a send that has never happened.
+    //
+    // It is archived rather than dropped: those devices are in the org, and the guard needs the
+    // full history to still catch a genuine repeat.
+    const previousSend = run.sends?.[key];
+    if (previousSend?.ok && !sameDeviceSet(previousSend.deviceIds, artifact.deviceIds)) {
+      run.sendHistory = run.sendHistory ?? {};
+      run.sendHistory[key] = [
+        ...(run.sendHistory[key] ?? []),
+        {
+          ...previousSend,
+          // Last chance to learn what that send carried: the artifact it went out with is still
+          // in the run, about to be overwritten on the next line. A send archived without its
+          // devices is one the guard can never reason about again, so it blocks every later
+          // send for this key on principle — including the legitimate other half of a batch.
+          deviceIds: previousSend.deviceIds ?? run.artifacts?.[key]?.deviceIds ?? [],
+        },
+      ];
+      delete run.sends[key];
+    }
+
     run.artifacts[key] = {
       key,
       template: artifact.template,
       filename: artifact.filename,
       uploadAs: artifact.uploadAs,
       rowCount: artifact.rowCount,
+      // The devices this file covers. Polling and the Review screen read this rather than the
+      // run's full device list, so an operation generated for a subset is watched and shown as
+      // that subset.
+      deviceIds: artifact.deviceIds ?? [],
       byteLength: artifact.buffer.length,
       path: file,
       header: artifact.header,
@@ -177,6 +278,10 @@ export function loadArtifact(runId, key) {
     filename: meta.filename,
     uploadAs: meta.uploadAs,
     rowCount: meta.rowCount,
+    // Carried through so the duplicate-send guard can compare this file against what has
+    // already gone out. Without it the guard cannot tell two files apart and falls back to
+    // refusing any second send for the key.
+    deviceIds: meta.deviceIds ?? [],
     header: meta.header,
     buffer: fs.readFileSync(meta.path),
     path: meta.path,

@@ -9,14 +9,29 @@
  *
  * Counters are persisted per environment, template and series, so a Haptic run and a
  * Driveri run never interfere. Blocks are contiguous and monotonic, which makes them
- * auditable ("this run took 125000-125009"), and the collision query runs once per
- * allocation. When it does hit an existing asset the counter advances past the highest
- * collision rather than rerolling, so every retry is strictly forward progress.
+ * auditable ("this run took 125000-125009"). When the org already holds an id the counter
+ * advances past it rather than rerolling, so every attempt is strictly forward progress.
+ *
+ * Two things that look like details and are not:
+ *
+ * Each attempt probes a whole LOOKAHEAD span, not just the `count` ids it wants, and picks
+ * the first free run of `count` inside it. Every descriptor's `sampleStart` was copied from
+ * a sheet the parser accepted, which means it is an id that *has already been loaded* — so
+ * a fresh counter always opens on a collision, usually against the entire batch that sheet
+ * belonged to. Probing only `count` ids made the cursor crawl forward `count` at a time and
+ * exhaust its attempts still inside that batch; one wide probe steps over it in a single
+ * round trip.
+ *
+ * And the cursor is persisted even when allocation ultimately fails, because the ground it
+ * rejected is genuinely occupied. Discarding it made every retry re-walk the same collisions
+ * and fail identically, forever.
  */
 
 import { COUNTERS_FILE, readJson, writeJson } from '../lib/paths.js';
 
 const MAX_ATTEMPTS = 8;
+/** Ids probed past the block itself, so one round trip can step over a batch loaded earlier. */
+const LOOKAHEAD = 250;
 
 /** A numeric series' width is fixed, so it can only hold so many more blocks. */
 function numericCeiling(digits) {
@@ -48,11 +63,13 @@ export function setCursor(env, templateId, seriesName, value) {
   writeJson(COUNTERS_FILE, counters);
 }
 
+/** Seed a series back to its descriptor's sampleStart. Returns the value it now reads, formatted
+ *  the same way `describeCursors` reports it, so a caller can show the result. */
 export function resetCursor(env, templateId, seriesName, seriesDef) {
   const counters = loadCounters();
   delete counters[counterKey(env, templateId, seriesName)];
   writeJson(COUNTERS_FILE, counters);
-  return peekCursor(env, templateId, seriesName, seriesDef);
+  return formatValue(seriesDef, peekCursor(env, templateId, seriesName, seriesDef));
 }
 
 /** All cursors for a template, for display on the Devices screen. */
@@ -108,60 +125,114 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
   const starts = {};
   for (const name of names) starts[name] = peekCursor(env, templateId, name, series[name]);
 
-  for (const name of names) {
-    const def = series[name];
-    if (def.type === 'numeric' && starts[name] + n > numericCeiling(def.digits)) {
-      throw new Error(
-        `Series "${name}" would overflow ${def.digits} digits at ${starts[name] + n}. ` +
-          'Reset this series\' counter on the Devices screen.'
-      );
-    }
-  }
+  assertHeadroom(series, starts, n);
 
   const allCollisions = [];
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const rows = buildRows(series, starts, n);
-
     if (!checkTaken) {
+      const rows = buildRows(series, starts, n);
       return finish({ env, templateId, series, starts, n, rows, attempts: attempt, checked: false, collisions: [] });
     }
 
+    // Probe well past the block so a whole batch loaded earlier can be cleared in one query.
+    const spans = {};
     const candidates = [];
     for (const name of names) {
       if (!isCheckable(series[name])) continue;
-      for (const row of rows) candidates.push(row[name]);
+      spans[name] = probeSpan(series[name], starts[name], n);
+      for (let i = 0; i < spans[name]; i++) {
+        candidates.push(formatValue(series[name], starts[name] + i));
+      }
     }
 
     const taken = candidates.length ? await checkTaken(candidates) : [];
-    if (taken.length === 0) {
-      return finish({ env, templateId, series, starts, n, rows, attempts: attempt, checked: true, collisions: allCollisions });
-    }
-
+    const takenSet = new Set(taken.map(String));
     allCollisions.push(...taken);
 
-    // Advance each series past its own highest collision. Forward-only, so a retry never
-    // revisits ground already rejected.
-    const takenNums = taken.map(Number).filter(Number.isFinite);
-    let advancedAny = false;
+    // Where does each series' first free run of n begin inside the span we just probed?
+    const offsets = {};
+    let allPlaced = true;
+    for (const name of names) {
+      if (!isCheckable(series[name])) {
+        offsets[name] = 0;
+        continue;
+      }
+      const offset = firstFreeRun(series[name], starts[name], n, spans[name], takenSet);
+      if (offset === -1) {
+        allPlaced = false;
+        break;
+      }
+      offsets[name] = offset;
+    }
+
+    if (allPlaced) {
+      for (const name of names) starts[name] += offsets[name];
+      const rows = buildRows(series, starts, n);
+      return finish({
+        env, templateId, series, starts, n, rows,
+        attempts: attempt, checked: true, collisions: allCollisions,
+      });
+    }
+
+    // The whole span is occupied — step every checkable series past it and look again.
     for (const name of names) {
       if (!isCheckable(series[name])) continue;
-      const hits = takenNums.filter((v) => v >= starts[name] && v < starts[name] + n);
-      if (hits.length) {
-        starts[name] = Math.max(...hits) + 1;
-        advancedAny = true;
-      }
+      starts[name] += spans[name];
     }
-    // A collision outside every window means the series overlap in a way the sample starts
-    // do not anticipate; nudge all of them rather than spinning.
-    if (!advancedAny) for (const name of names) starts[name] += n;
+    assertHeadroom(series, starts, n);
   }
+
+  // Persist the ground already rejected. It is genuinely occupied, so resuming past it is
+  // correct and keeps the next attempt from re-walking exactly this search.
+  for (const name of names) setCursor(env, templateId, name, starts[name]);
 
   throw new Error(
     `Could not find ${n} free ids for "${templateId}" after ${MAX_ATTEMPTS} attempts ` +
-      `(${allCollisions.length} collisions). Reset the counters on the Devices screen to ` +
-      'move this template into fresh territory.'
+      `(${allCollisions.length} ids already in the org). The counters have been advanced past ` +
+      'everything checked, so allocating again resumes from there rather than repeating this ' +
+      'search — or set a series cursor directly on the Ids screen.'
   );
+}
+
+/** A numeric series can only hold so many more ids; refuse before minting a narrow one. */
+function assertHeadroom(series, starts, n) {
+  for (const [name, def] of Object.entries(series)) {
+    if (def.type === 'numeric' && starts[name] + n - 1 > numericCeiling(def.digits)) {
+      throw new Error(
+        `Series "${name}" would overflow ${def.digits} digits at ${starts[name] + n - 1}. ` +
+          'Reset this series\' counter on the Ids screen.'
+      );
+    }
+  }
+}
+
+/** How many ids to ask the org about: the block, plus room to step over a loaded batch. */
+function probeSpan(def, start, n) {
+  const want = n + LOOKAHEAD;
+  if (def.type !== 'numeric') return want;
+  const room = numericCeiling(def.digits) - start + 1;
+  return Math.max(n, Math.min(want, room));
+}
+
+/**
+ * Offset of the first run of `n` consecutive free ids within the probed span, or -1.
+ * On a hit it resumes from just past the taken id rather than the next offset, so a dense
+ * block costs one pass, not one pass per id.
+ */
+function firstFreeRun(def, start, n, span, takenSet) {
+  for (let offset = 0; offset + n <= span; offset++) {
+    let free = true;
+    for (let i = 0; i < n; i++) {
+      if (takenSet.has(formatValue(def, start + offset + i))) {
+        offset += i;
+        free = false;
+        break;
+      }
+    }
+    if (free) return offset;
+  }
+  return -1;
 }
 
 function buildRows(series, starts, n) {

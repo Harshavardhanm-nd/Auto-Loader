@@ -19,6 +19,8 @@ import {
   loadLifecycle,
   classifyStage,
   operationMovement,
+  operationChain,
+  operationForSyncBase,
   summariseStages,
 } from '../lib/lifecycle.js';
 
@@ -299,24 +301,22 @@ export async function fetchRecentOrders(env, { limit = 25 } = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Which of these device ids already exist? Asset.Name IS the device_id — that is the join
- * key for everything (spec section 6).
- */
-/** Maps series names declared in templates to their Asset field API name. */
-const SERIES_SF_FIELD = {
-  sim_serial: 'SIM_Serial__c',
-  device_imei: 'Device_IMEI__c',
-};
-
-/**
- * Check candidate ids against Asset.Name, Asset.SIM_Serial__c and Asset.Device_IMEI__c.
- * Returns every value that is already taken in any of those fields so the allocator can
- * skip past it — regardless of which asset or SKU it belongs to.
+ * Which of these candidate ids are already taken?
+ *
+ * Asset.Name IS the device_id — that is the join key for everything (spec section 6) — but a
+ * Driveri run mints device_id, sim_serial and device_imei from three series offset by 10, so
+ * a value colliding with somebody else's SIM_Serial__c is just as unusable as one colliding
+ * with a Name. All three fields are checked.
+ *
+ * Only values that were actually asked about come back. A matched Asset also carries its own
+ * SIM_Serial__c and Device_IMEI__c, and reporting those as "taken" told the allocator to step
+ * over ids nobody had claimed.
  */
 export async function findTakenDeviceIds(env, candidateIds) {
   const ids = [...new Set(candidateIds.map(String))].filter(Boolean);
   if (!ids.length) return [];
 
+  const asked = new Set(ids);
   const taken = new Set();
   const CHUNK = 400;
   for (let i = 0; i < ids.length; i += CHUNK) {
@@ -331,9 +331,9 @@ export async function findTakenDeviceIds(env, candidateIds) {
            OR Device_IMEI__c IN (${inList})`
     );
     for (const r of records) {
-      if (r.Name) taken.add(r.Name);
-      if (r.SIM_Serial__c) taken.add(r.SIM_Serial__c);
-      if (r.Device_IMEI__c) taken.add(r.Device_IMEI__c);
+      for (const value of [r.Name, r.SIM_Serial__c, r.Device_IMEI__c]) {
+        if (value && asked.has(String(value))) taken.add(String(value));
+      }
     }
   }
   return [...taken];
@@ -487,6 +487,10 @@ export function summarisePolling(stage, deviceIds, assets) {
     const reached = asset.syncStatus === expectation.success;
     const failedHere = asset.syncStatus === expectation.failed;
     return {
+      // Where this device's own status sits relative to the stage being watched. See
+      // `positionInChain` — this is what stops a device that has not reached the stage yet
+      // being counted as a success just because it finished an earlier one.
+      aheadOfStage: positionInChain(stage, asset.syncStatus) === 'ahead',
       deviceId,
       present: true,
       assetId: asset.id,
@@ -507,14 +511,97 @@ export function summarisePolling(stage, deviceIds, assets) {
     };
   });
 
-  const succeeded = rows.filter((r) => r.reached || (r.terminal && !r.failed));
+  return { stage, label: expectation.label, expectation, ...tallyRows(rows) };
+}
+
+/**
+ * Recompute the stage-relative fields of a stored snapshot.
+ *
+ * A snapshot is written once and read many times, so anything decided at poll time is frozen at
+ * whatever the code understood that day — a snapshot taken before `aheadOfStage` existed carries
+ * no opinion about it, and every reader downstream silently falls back. Deriving it here instead
+ * means an old snapshot reads exactly like a fresh one.
+ *
+ * Everything needed is already in the row: `syncStatus` is the fact, the rest is interpretation.
+ */
+export function rescoreSnapshot(stage, snapshot) {
+  const expectation = STAGE_EXPECTATIONS[stage];
+  if (!expectation || !snapshot?.rows?.length) return snapshot;
+
+  const rows = snapshot.rows.map((row) => ({
+    ...row,
+    reached: row.syncStatus === expectation.success,
+    aheadOfStage: positionInChain(stage, row.syncStatus) === 'ahead',
+  }));
+  return { ...snapshot, ...tallyRows(rows) };
+}
+
+/**
+ * Split a tally into the devices still at this stage and the ones that have moved past it.
+ *
+ * The Watch page shows one tab per stage, and a device that has gone on to a later operation was
+ * appearing under every earlier tab — it carries a success there too, so by the old reading it
+ * belonged everywhere. Showing it only where it now sits means answering "which devices are at
+ * this stage" separately from "did the file I sent land", and both are worth keeping: the second
+ * is the record of the send, and it must not vanish just because the devices moved on.
+ *
+ * Counted by the same `tallyRows` as the whole set, so the two can never drift apart.
+ */
+export function splitByStagePosition(summary) {
+  const movedOn = summary.rows.filter((r) => r.aheadOfStage === true);
+  if (!movedOn.length) return { ...summary, atStage: null, movedOn: [] };
+  return {
+    ...summary,
+    atStage: tallyRows(summary.rows.filter((r) => r.aheadOfStage !== true)),
+    movedOn: movedOn.map((r) => ({ deviceId: r.deviceId, syncStatus: r.syncStatus, stage: r.stage })),
+  };
+}
+
+/**
+ * Is a device's own sync status behind, at, or ahead of the stage being watched?
+ *
+ * Both directions look the same on the Asset — `INITIAL_DEVICE_LOAD_SYNC_SUCCESS` and
+ * `SHIPMENT_UPDATE_SYNC_SUCCESS` are each just "some operation succeeded" — so the answer comes
+ * from where those two operations sit on the chain in `lifecycle.json`.
+ *
+ * `unknown` when either end is off the chain: `dataUpdate` moves no device and so has no place in
+ * it, and a status this app does not model should never be read as progress. Unknown is treated
+ * as not-ahead, which is the cautious reading — it can under-report a success, never invent one.
+ */
+function positionInChain(stage, syncStatus) {
+  const chain = operationChain();
+  const watched = chain.indexOf(stage);
+  if (watched === -1) return 'unknown';
+
+  const base = classifySyncStatus(syncStatus).base;
+  const operation = base ? operationForSyncBase(base) : null;
+  const at = operation ? chain.indexOf(operation) : -1;
+  if (at === -1) return 'unknown';
+
+  if (at > watched) return 'ahead';
+  return at === watched ? 'at' : 'behind';
+}
+
+/**
+ * Roll a set of already-classified rows up into counts.
+ *
+ * Split out so a stored snapshot can be re-tallied after rows are dropped from it without
+ * duplicating — and quietly diverging from — the arithmetic used when it was first taken.
+ */
+export function tallyRows(rows) {
+  // Done means: reached this stage, or already past it. A device sitting on an *earlier*
+  // operation's success is not done — it simply has not had this operation applied yet, and
+  // counting it as a success reports a load that never happened.
+  //
+  // `aheadOfStage === undefined` is a row from a snapshot taken before this distinction existed;
+  // those keep the old "any terminal state is done" reading rather than being re-judged wrongly.
+  const isDone = (r) => r.reached || (r.terminal && !r.failed && r.aheadOfStage !== false);
+
+  const succeeded = rows.filter(isDone);
   const failed = rows.filter((r) => r.failed);
-  const waiting = rows.filter((r) => !r.terminal);
+  const waiting = rows.filter((r) => !isDone(r) && !r.failed);
 
   return {
-    stage,
-    label: expectation.label,
-    expectation,
     rows,
     counts: {
       total: rows.length,
