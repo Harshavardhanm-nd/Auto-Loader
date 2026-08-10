@@ -184,7 +184,12 @@ export default function ReviewPage({
         title={opMeta?.label ?? 'Pipeline'}
         actions={
           <>
-            <button className="btn secondary small" disabled={busy === 'generate'} onClick={generate}>
+            <button
+              className="btn secondary small"
+              disabled={busy === 'generate' || Boolean(pendingCompose)}
+              title={pendingCompose ? 'Confirm or discard the composed message before regenerating' : undefined}
+              onClick={generate}
+            >
               {busy === 'generate' ? 'Generating…' : filesForOperation.length ? 'Re-generate' : 'Generate files'}
             </button>
             {filesForOperation.length ? (
@@ -255,6 +260,7 @@ export default function ReviewPage({
             </table>
           </div>
         ) : null}
+
       </Sheet>
 
       {blocked.length ? (

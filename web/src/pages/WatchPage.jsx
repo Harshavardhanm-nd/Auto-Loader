@@ -31,9 +31,13 @@ export default function WatchPage({
   const [selected, setSelected] = React.useState(new Set());
   // Devices that have gone on to a later operation are hidden by default: this tab is about the
   // devices at this stage. The send's own record is one click away, never lost.
-  const [showMovedOn, setShowMovedOn] = React.useState(false);
   const [model, setModel] = React.useState(null);
   const [position, setPosition] = React.useState(null);
+
+  // Asset-status view tabs — read-only filtered views of the initial-load device pool.
+  const [viewPoll, setViewPoll] = React.useState(null);
+  const [viewBusy, setViewBusy] = React.useState(false);
+  const isViewTab = ASSET_VIEW_TAB_IDS.has(stage);
 
   React.useEffect(() => {
     api.lifecycle().then(setModel).catch(() => setModel(null));
@@ -55,6 +59,32 @@ export default function WatchPage({
   React.useEffect(() => {
     load();
   }, [load]);
+
+  const loadViewData = React.useCallback(async () => {
+    if (!ASSET_VIEW_TAB_IDS.has(stage)) return;
+    setViewBusy(true);
+    try {
+      setViewPoll(await api.poll(runId, 'initialLoad'));
+    } catch (err) {
+      onError(err);
+    } finally {
+      setViewBusy(false);
+    }
+  }, [runId, stage, onError]);
+
+  React.useEffect(() => { loadViewData(); }, [loadViewData]);
+
+  const refreshViewData = async () => {
+    setViewBusy(true);
+    try {
+      await api.pollOnce(runId, 'initialLoad');
+      setViewPoll(await api.poll(runId, 'initialLoad'));
+    } catch (err) {
+      onError(err);
+    } finally {
+      setViewBusy(false);
+    }
+  };
 
   const loadPosition = React.useCallback(() => {
     api
@@ -80,13 +110,10 @@ export default function WatchPage({
   const stages = pollableStages(model);
   const stageMeta = stages.find((s) => s.id === stage) ?? { id: stage, label: stage, success: null };
   const fullSnapshot = poll?.snapshot;
-  // `atStage` is present only when some devices have moved past; the server tallies both sides
-  // with the same arithmetic, so the headline counts always match the rows underneath them.
-  const movedOn = fullSnapshot?.movedOn ?? [];
-  const snapshot =
-    !showMovedOn && fullSnapshot?.atStage
-      ? { ...fullSnapshot, ...fullSnapshot.atStage }
-      : fullSnapshot;
+  // Always show only at-stage rows; devices that have moved further appear under their own tab.
+  const snapshot = fullSnapshot?.atStage
+    ? { ...fullSnapshot, ...fullSnapshot.atStage }
+    : fullSnapshot;
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
 
@@ -106,7 +133,17 @@ export default function WatchPage({
       r.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS'
   );
 
-  const eligibleRows = shipmentEligibleRows.length > 0 ? shipmentEligibleRows : receivedEligibleRows;
+  // Rows eligible for Mark Dead: IDMS 7 (Returned RMA) in the rmaReturned poll tab.
+  const deadEligibleRows = (snapshot?.rows ?? []).filter(
+    (r) => stage === 'rmaReturned' && Number(r.idmsStatus) === 7
+  );
+
+  const eligibleRows =
+    shipmentEligibleRows.length > 0
+      ? shipmentEligibleRows
+      : receivedEligibleRows.length > 0
+      ? receivedEligibleRows
+      : deadEligibleRows;
 
   const toggleSelect = (deviceId) => {
     setSelected((prev) => {
@@ -152,6 +189,51 @@ export default function WatchPage({
     }
   };
 
+  const sendToRmaReturned = async () => {
+    setBusy('rmaReturnedGen');
+    try {
+      await api.generate(runId, 'rmaReturned', [...selected]);
+      await refreshRun();
+      setReviewOperation('rmaReturned');
+      goto('review');
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendToDeviceDead = async () => {
+    setBusy('deviceDeadGen');
+    try {
+      await api.generate(runId, 'deviceDead', [...selected]);
+      await refreshRun();
+      setReviewOperation('deviceDead');
+      goto('review');
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Toggle a single device in the rmaInitiated view tab selection.
+  const toggleRmaSelect = (deviceId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(deviceId) ? next.delete(deviceId) : next.add(deviceId);
+      return next;
+    });
+  };
+
+  const toggleRmaSelectAll = (rows) => {
+    if (rows.length > 0 && rows.every((r) => selected.has(r.deviceId))) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(rows.map((r) => r.deviceId)));
+    }
+  };
+
   const act = async (fn, key) => {
     setBusy(key);
     try {
@@ -179,62 +261,125 @@ export default function WatchPage({
       <Sheet
         eyebrow="Stage"
         title={stageMeta.label}
-        live={Boolean(poll?.running)}
+        live={Boolean(!isViewTab && poll?.running)}
         actions={
-          <>
-            <button
-              className="btn small"
-              disabled={busy || poll?.running}
-              onClick={() => act(() => api.startPoll(runId, stage), 'start')}
-            >
-              {poll?.running ? 'Polling…' : 'Start polling'}
-            </button>
-            <button
-              className="btn secondary small"
-              disabled={busy}
-              onClick={() => act(() => api.pollOnce(runId, stage), 'once')}
-            >
-              Refresh now
-            </button>
-            {poll?.running ? (
+          !isViewTab ? (
+            <>
               <button
-                className="btn quiet small"
-                disabled={busy}
-                onClick={() => act(() => api.stopPoll(runId, stage), 'stop')}
+                className="btn small"
+                disabled={busy || poll?.running}
+                onClick={() => act(() => api.startPoll(runId, stage), 'start')}
               >
-                Stop
+                {poll?.running ? 'Polling…' : 'Start polling'}
               </button>
-            ) : null}
-          </>
+              <button
+                className="btn secondary small"
+                disabled={busy}
+                onClick={() => act(() => api.pollOnce(runId, stage), 'once')}
+              >
+                Refresh now
+              </button>
+              {poll?.running ? (
+                <button
+                  className="btn quiet small"
+                  disabled={busy}
+                  onClick={() => act(() => api.stopPoll(runId, stage), 'stop')}
+                >
+                  Stop
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <button className="btn secondary small" disabled={viewBusy} onClick={refreshViewData}>
+              {viewBusy ? 'Refreshing…' : 'Refresh from org'}
+            </button>
+          )
         }
       >
         <Segmented
           label="Stage"
           value={stage}
-          onChange={setStage}
-          options={stages.map((s) => ({
-            value: s.id,
-            label: s.label,
-            title: s.movesTo ? `Moves the device to ${s.movesTo}` : 'Does not change the stage',
-            done: Object.values(run.sends ?? {}).some((x) => x.operation === s.id && x.ok),
-          }))}
+          onChange={(v) => { setStage(v); setSelected(new Set()); }}
+          options={[
+            ...stages.filter((s) => s.id !== 'rmaReturned').map((s) => ({
+              value: s.id,
+              label: s.label,
+              title: s.movesTo ? `Moves the device to ${s.movesTo}` : 'Does not change the stage',
+              done: Object.values(run.sends ?? {}).some((x) => x.operation === s.id && x.ok),
+            })),
+            ...ASSET_VIEW_TABS.filter((t) => t.id !== 'deadView').map((t) => ({ value: t.id, label: t.label, title: t.title })),
+            // rmaReturned poll tab placed after rmaInitiated view tab
+            ...stages.filter((s) => s.id === 'rmaReturned').map((s) => ({
+              value: s.id,
+              label: s.label,
+              title: s.movesTo ? `Moves the device to ${s.movesTo}` : 'Does not change the stage',
+              done: Object.values(run.sends ?? {}).some((x) => x.operation === s.id && x.ok),
+            })),
+            // Dead view tab placed after rmaReturned
+            { value: 'deadView', label: 'DEAD', title: 'Non-Repairable by Repair Partner sync status' },
+          ]}
         />
 
-        {sendsForStage.length === 0 ? (
+        {!isViewTab && sendsForStage.length === 0 ? (
           <p className="small" style={{ color: 'var(--warn)', marginTop: '0.8rem', marginBottom: 0 }}>
             The {stageMeta.label.toLowerCase()} email has not been sent from this run yet — there
             may be nothing to watch.
           </p>
-        ) : (
+        ) : !isViewTab ? (
           <p className="prose small" style={{ marginTop: '0.8rem', marginBottom: 0 }}>
             Sent to <span className="mono">{sendsForStage[0].to}</span> at{' '}
             {new Date(sendsForStage[0].sentAt).toLocaleTimeString()} · waiting for{' '}
             <span className="mono">{stageMeta.success ?? 'a status this operation does not write'}</span>
           </p>
-        )}
+        ) : null}
       </Sheet>
 
-      {snapshot ? (
+      {isViewTab ? (
+        <ViewTabContent
+          stage={stage}
+          viewPoll={viewPoll}
+          viewBusy={viewBusy}
+          selected={selected}
+          onToggle={toggleRmaSelect}
+          onToggleAll={toggleRmaSelectAll}
+        />
+      ) : null}
+
+      {stage === 'rmaInitiated' && selected.size > 0 ? (
+        <Sheet>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+            <span className="small">
+              <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
+            </span>
+            <button
+              className="btn small"
+              disabled={busy === 'rmaReturnedGen'}
+              onClick={sendToRmaReturned}
+            >
+              {busy === 'rmaReturnedGen' ? 'Generating…' : 'Send Assets to RMA Returned'}
+            </button>
+          </div>
+        </Sheet>
+      ) : null}
+
+      {stage === 'deadView' && selected.size > 0 ? (
+        <Sheet>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+            <span className="small">
+              <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
+            </span>
+            <button
+              className="btn small"
+              disabled={busy === 'deviceDeadGen'}
+              onClick={sendToDeviceDead}
+            >
+              {busy === 'deviceDeadGen' ? 'Generating…' : 'Move Assets to Dead'}
+            </button>
+          </div>
+        </Sheet>
+      ) : null}
+
+      {!isViewTab && snapshot ? (
         <>
           <Sheet>
             <div className="stat-row">
@@ -259,33 +404,6 @@ export default function WatchPage({
               </div>
             </div>
           </Sheet>
-
-          {movedOn.length ? (
-            <Callout
-              tone="info"
-              title={
-                showMovedOn
-                  ? `Showing all ${fullSnapshot.counts.total} device(s) sent for ${stageMeta.label.toLowerCase()}`
-                  : `${movedOn.length} device(s) have moved past ${stageMeta.label.toLowerCase()}`
-              }
-            >
-              <div className="small">
-                {showMovedOn
-                  ? 'Including devices that have since gone further. This is the record of what the ' +
-                    'email actually carried.'
-                  : 'They are further along the chain now, so they appear under their own stage ' +
-                    'instead. The counts above cover only the devices still here.'}
-              </div>
-              <div className="mono small break" style={{ marginTop: '0.4rem' }}>
-                {movedOn.map((d) => `${d.deviceId} → ${d.syncStatus}`).join(' · ')}
-              </div>
-              <div className="btn-row" style={{ marginTop: '0.5rem' }}>
-                <button className="btn quiet small" onClick={() => setShowMovedOn((v) => !v)}>
-                  {showMovedOn ? 'Show only devices at this stage' : 'Show everything that was sent'}
-                </button>
-              </div>
-            </Callout>
-          ) : null}
 
           {snapshot.anyFailed ? (
             <Callout tone="fail" title={`${snapshot.failedDeviceIds.length} device(s) failed to sync`}>
@@ -334,7 +452,8 @@ export default function WatchPage({
                     ) : null}
                     <th className="raw">device_id</th>
                     <th>Sync status</th>
-                    <th>Life cycle stage</th>
+                    <th>IDMS Status</th>
+                    <th>IDMS No</th>
                     <th>Asset status</th>
                     <th>Attached order</th>
                     <th>Last change</th>
@@ -348,7 +467,8 @@ export default function WatchPage({
                         row.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS') ||
                       (stage === 'shipmentUpdate' &&
                         Number(row.idmsStatus) === -1 &&
-                        row.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS');
+                        row.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS') ||
+                      (stage === 'rmaReturned' && Number(row.idmsStatus) === 7);
                     return (
                       <tr key={row.deviceId}>
                         {eligibleRows.length > 0 ? (
@@ -370,9 +490,10 @@ export default function WatchPage({
                             <Badge tone="muted">no asset yet</Badge>
                           )}
                         </td>
-                        <td>
-                          <StageCell stage={row.stage} idmsStatus={row.idmsStatus} />
+                        <td className="small">
+                          <IdmsStatusLabel stage={row.stage} />
                         </td>
+                        <td className="mono small">{row.idmsStatus ?? '—'}</td>
                         <td className="small">{row.assetStatus ?? '—'}</td>
                         <td className="mono small">
                           {row.cpqOrderNumber ?? <span className="faint">unattached</span>}
@@ -400,7 +521,15 @@ export default function WatchPage({
                 <span className="small">
                   <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
                 </span>
-                {receivedEligibleRows.length > 0 ? (
+                {deadEligibleRows.length > 0 ? (
+                  <button
+                    className="btn small"
+                    disabled={busy === 'deviceDeadGen'}
+                    onClick={sendToDeviceDead}
+                  >
+                    {busy === 'deviceDeadGen' ? 'Generating…' : 'Move Assets to Dead'}
+                  </button>
+                ) : receivedEligibleRows.length > 0 ? (
                   <button
                     className="btn small"
                     disabled={busy === 'receivedGen'}
@@ -440,6 +569,145 @@ export default function WatchPage({
   );
 }
 
+const ASSET_VIEW_TABS = [
+  { id: 'shippedActive', label: 'Shipped Active', title: 'NEW_ORDER_FULFILMENT or IDMS 2 + success' },
+  { id: 'installed',     label: 'Installed',      title: 'IDMS status 4' },
+  { id: 'rmaPending',    label: 'RMA Pending',    title: 'IDMS status 10' },
+  { id: 'rmaInitiated',  label: 'RMA Initiated',  title: 'IDMS status 5' },
+  { id: 'deadView',      label: 'DEAD',           title: 'Non-Repairable by Repair Partner sync status' },
+];
+const ASSET_VIEW_TAB_IDS = new Set(ASSET_VIEW_TABS.map((t) => t.id));
+
+function filterViewRows(rows, tab) {
+  if (!rows) return [];
+  switch (tab) {
+    case 'shippedActive':
+      return rows.filter(
+        (r) =>
+          r.syncStatus === 'NEW_ORDER_FULFILMENT' ||
+          (Number(r.idmsStatus) === 2 && r.syncStatus === 'NEW_ORDER_FULFILMENT_SYNC_SUCCESS'),
+      );
+    case 'installed':  return rows.filter((r) => Number(r.idmsStatus) === 4);
+    case 'rmaPending': return rows.filter((r) => Number(r.idmsStatus) === 10);
+    case 'rmaInitiated':
+      return rows.filter(
+        (r) =>
+          Number(r.idmsStatus) === 5 &&
+          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER' &&
+          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_SUCCESS' &&
+          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_FAILED',
+      );
+    case 'deadView':
+      // Sync status values for "Non Repairable By Repair Partner" — confirm exact strings with
+      // the Salesforce org if these do not match.
+      return rows.filter(
+        (r) =>
+          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER' ||
+          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_SUCCESS' ||
+          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_FAILED',
+      );
+    default: return [];
+  }
+}
+
+function ViewTabContent({ stage, viewPoll, viewBusy, selected = new Set(), onToggle, onToggleAll }) {
+  const rows = filterViewRows(viewPoll?.snapshot?.rows, stage);
+  const tabMeta = ASSET_VIEW_TABS.find((t) => t.id === stage);
+  const selectable = stage === 'rmaInitiated' || stage === 'deadView';
+
+  if (viewBusy && !viewPoll) return <Sheet><Spinner label="Loading…" /></Sheet>;
+  if (!viewPoll?.snapshot) {
+    return (
+      <Sheet>
+        <p className="muted small" style={{ margin: 0 }}>
+          No initial-load snapshot yet — select Initial Load and start polling first, or click{' '}
+          <strong>Refresh from org</strong> above.
+        </p>
+      </Sheet>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <Sheet>
+        <p className="muted small" style={{ margin: 0 }}>
+          No devices in the <strong>{tabMeta?.label}</strong> state for this run.
+        </p>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Sheet eyebrow={tabMeta?.label} title={`${rows.length} device${rows.length !== 1 ? 's' : ''}`}>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              {selectable ? (
+                <th style={{ width: '2rem' }}>
+                  <input
+                    type="checkbox"
+                    title="Select all"
+                    checked={rows.length > 0 && rows.every((r) => selected.has(r.deviceId))}
+                    onChange={() => onToggleAll(rows)}
+                  />
+                </th>
+              ) : null}
+              <th className="raw">device_id</th>
+              <th>Sync status</th>
+              <th>IDMS Status</th>
+              <th>IDMS No</th>
+              <th>Asset status</th>
+              <th>Attached order</th>
+              <th>Last change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.deviceId}>
+                {selectable ? (
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(row.deviceId)}
+                      onChange={() => onToggle(row.deviceId)}
+                    />
+                  </td>
+                ) : null}
+                <td className="mono">{row.deviceId}</td>
+                <td>
+                  {row.present ? (
+                    <SyncStatusBadge status={row.syncStatus} />
+                  ) : (
+                    <Badge tone="muted">no asset yet</Badge>
+                  )}
+                </td>
+                <td className="small"><IdmsStatusLabel stage={row.stage} /></td>
+                <td className="mono small">{row.idmsStatus ?? '—'}</td>
+                <td className="small">{row.assetStatus ?? '—'}</td>
+                <td className="mono small">
+                  {row.cpqOrderNumber ?? <span className="faint">unattached</span>}
+                </td>
+                <td className="small muted">
+                  {row.lastModifiedDate
+                    ? new Date(row.lastModifiedDate).toLocaleTimeString()
+                    : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
+        {stage === 'rmaInitiated'
+          ? 'Select devices to generate the RMA Returned CSV. Data from the initial-load snapshot — click Refresh from org for the latest.'
+          : stage === 'deadView'
+          ? 'Devices flagged Non-Repairable by Repair Partner. Data from the initial-load snapshot — click Refresh from org for the latest.'
+          : <>Data from the initial-load snapshot — click <strong>Refresh from org</strong> for the latest status from Salesforce.</>}
+      </p>
+    </Sheet>
+  );
+}
+
 /**
  * The stages that can actually be watched, ordered along the chart.
  *
@@ -467,6 +735,13 @@ function pollableStages(model) {
       rank: o.movement ? order.get(o.movement.to[0]) ?? 99 : 99,
     }))
     .sort((a, b) => a.rank - b.rank);
+}
+
+function IdmsStatusLabel({ stage }) {
+  if (!stage) return <span className="faint">—</span>;
+  if (stage.absent) return <Badge tone="muted">no stage yet</Badge>;
+  if (!stage.known) return <Badge tone="warn" title="Not on the DLCM chart">unmapped</Badge>;
+  return <span>{stage.label}</span>;
 }
 
 function StageCell({ stage, idmsStatus }) {

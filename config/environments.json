@@ -40,8 +40,10 @@
       "needsMail": true,
       "$comment": "Mailbox known, CSV format not yet."
     },
+    "wizardUpload": { "label": "Wizard upload", "needsMail": false },
+    "rmaReturned": { "label": "RMA Returned", "needsMail": true },
     "deviceDead": {
-      "label": "Mark dead",
+      "label": "DEAD",
       "needsMail": true,
       "$comment": "Mailbox known in both envs, CSV format not yet. NOTE: the two orgs use different local parts for this — testing's is assets_non_repairable_at_repair_center, staging's is asset_markdead_emailservice. Confirm they are the same operation."
     },
@@ -49,8 +51,7 @@
       "label": "Undo mark dead",
       "needsMail": true,
       "$comment": "Staging only — no testing equivalent was supplied. Mailbox known, CSV format not yet."
-    },
-    "wizardUpload": { "label": "Wizard upload", "needsMail": false }
+    }
   },
   "environments": {
     "testing": {
@@ -98,8 +99,8 @@
             "body": "Please find the attached Faulty Devices Returned CSV."
           },
           "deviceDead": {
-            "$comment": "Also an Apex email service address; same refresh caveat as faultyReturned.",
-            "to": "assets_non_repairable_at_repair_center@3twzwb230e021ajeyfch6w3jzq4kjilg81sel7icyrkmv09p9.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
+            "$comment": "Apex email service address for Testing. Local part and host change on sandbox refresh — re-copy after any refresh.",
+            "to": "asset_markdead_emailservice@4o4gyp7bi100a8h8qmtk65biwnghebg44os7zoq3uijd4t0se.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
             "subject": "Device Dead",
             "body": "Please find the attached Device Dead CSV."
           },
@@ -114,6 +115,12 @@
             "to": "REPLACE_ME_no_data_update_DL_supplied@netradyne.com",
             "subject": "Data Update",
             "body": "Please find the attached Data Update CSV."
+          },
+          "rmaReturned": {
+            "$comment": "Apex email service address for Testing. Local part and host change on sandbox refresh — re-copy after any refresh.",
+            "to": "assets_returned_to_vvdn@b1m859pz5vx757rxiqt4f31z1rhnc8t7jbvprlnyikavjnw8q.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
+            "subject": "RMA Returned",
+            "body": "Please find the attached RMA Returned CSV."
           }
         },
         "byFamilyOperation": {
@@ -192,6 +199,12 @@
             "to": "REPLACE_ME_no_data_update_DL_supplied",
             "subject": "Data Update",
             "body": "Please find the attached Data Update CSV."
+          },
+          "rmaReturned": {
+            "$comment": "NOT supplied for Staging. Add the Apex email service address after sandbox refresh.",
+            "to": "REPLACE_ME_no_rma_returned_DL_supplied_for_staging",
+            "subject": "RMA Returned",
+            "body": "Please find the attached RMA Returned CSV."
           }
         },
         "byFamilyOperation": {}

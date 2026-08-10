@@ -1,0 +1,41 @@
+{
+  "id": "rma-returned",
+  "label": "Returned RMA — any family",
+  "family": "shared",
+  "familyLabel": "Any family",
+  "kind": "operation",
+  "operation": "rmaReturned",
+  "status": "verified",
+  "sourceTemplate": "Retured_RMA.csv",
+  "bytes": {
+    "bom": false,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "RMA_Returned_{family}.csv",
+  "series": {},
+  "defaults": {
+    "returned_location": "DCL"
+  },
+  "columns": [
+    {
+      "name": "device_id(required)",
+      "source": "existing.device_id",
+      "required": true
+    },
+    {
+      "name": "returned_location",
+      "source": "field.returned_location"
+    },
+    {
+      "name": "returned_date(yyyy-mm-dd)",
+      "source": "today"
+    }
+  ],
+  "reusesExistingDevices": true,
+  "notes": [
+    "Applicable to both devices and accessories — family-independent, one sheet for the whole run.",
+    "returned_location defaults to DCL; override via the run's sharedFields or group fields.",
+    "Moves the device from IDMS 5 (RMA Initiated) to IDMS 7 (Returned RMA)."
+  ]
+}

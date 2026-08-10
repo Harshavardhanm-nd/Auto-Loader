@@ -1,0 +1,43 @@
+{
+  "id": "device-dead",
+  "label": "Mark Dead — any family",
+  "family": "shared",
+  "familyLabel": "Any family",
+  "kind": "operation",
+  "operation": "deviceDead",
+  "status": "verified",
+  "bytes": {
+    "bom": false,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "Dead_{family}.csv",
+  "series": {},
+  "defaults": {
+    "dead_reason": "Lost by Customer"
+  },
+  "columns": [
+    {
+      "name": "device_id",
+      "source": "existing.device_id",
+      "required": true
+    },
+    {
+      "name": "Device Type",
+      "source": "existing.device_type",
+      "required": true
+    },
+    {
+      "name": "Dead Reason",
+      "source": "field.dead_reason"
+    }
+  ],
+  "reusesExistingDevices": true,
+  "notes": [
+    "Applicable to devices at IDMS 7 (Returned RMA), 8 (Returned Non-RMA), or 12 (NF OOW).",
+    "Device Type is populated from the Asset's Device_Category__c field at generate time.",
+    "Allowed Device Type values: VBUS, DHUB, HAPTIC, WIRELESS_ALERT_BUTTON, Driveri, DMS.",
+    "Dead Reason defaults to 'Lost By Customer'; override via the run's sharedFields.dead_reason.",
+    "Moves the device from IDMS 7/8/12 to IDMS 9 (Dead)."
+  ]
+}

@@ -11,7 +11,7 @@ import {
   deleteRun,
 } from '../services/run-store.js';
 import { allocateSeries, describeCursors, resetCursor, setCursor, primarySeriesOf } from '../services/id-generator.js';
-import { buildCsv, planGeneratedRows, planWizardRows, planExistingRows } from '../services/csv-builder.js';
+import { buildCsv, planGeneratedRows, planWizardRows, planExistingRows, planDeadRows } from '../services/csv-builder.js';
 import {
   findTakenDeviceIds,
   fetchOrder,
@@ -70,6 +70,26 @@ export const runsRouter = express.Router();
  */
 
 const artifactKey = (operation, family) => `${operation}:${family}`;
+
+// Allowed "Device Type" values for the Dead CSV, mapped from Asset.Device_Category__c.
+const DEAD_DEVICE_TYPE_MAP = {
+  HAPTIC: 'HAPTIC',
+  DHUB: 'DHUB',
+  'D-HUB': 'DHUB',
+  DMS: 'DMS',
+  VBUS: 'VBUS',
+  'V-BUS': 'VBUS',
+  DRIVERI: 'Driveri',
+  'DRIVER-I': 'Driveri',
+  WIRELESS_ALERT_BUTTON: 'WIRELESS_ALERT_BUTTON',
+  WIRELESS: 'WIRELESS_ALERT_BUTTON',
+};
+
+function resolveDeadDeviceType(deviceCategory) {
+  if (!deviceCategory) return 'HAPTIC';
+  const key = String(deviceCategory).toUpperCase().trim();
+  return DEAD_DEVICE_TYPE_MAP[key] ?? deviceCategory;
+}
 
 function groupTemplate(group, operation) {
   return findTemplate(group.family, operation);
@@ -388,13 +408,25 @@ function collectCheckableIds(run) {
 /**
  * The devices a given stage actually acted on.
  *
- * Not the same as the run's devices. A shipment update raised from the Watch page covers only
- * the units the operator ticked, so watching the whole run would sit waiting on devices that
- * were never in the file and report them as never arriving. The generated artifact records what
- * it contains, so that is the authority; the run's full list is the fallback for a stage with no
- * file yet, and for runs recorded before artifacts carried ids.
+ * Accumulates across all sends for the stage — current and archived — so a second partial send
+ * to the same stage adds to the poll tab rather than replacing it. Falls back to the current
+ * artifact when nothing has been sent yet, and to the run's full id set as a last resort.
  */
 function stageDeviceIds(run, stage) {
+  // Collect ids from every confirmed send for this stage (current + superseded).
+  const fromSends = [
+    ...Object.entries(run.sends ?? {})
+      .filter(([key]) => key.startsWith(`${stage}:`))
+      .flatMap(([, send]) => send?.deviceIds ?? []),
+    ...Object.entries(run.sendHistory ?? {})
+      .filter(([key]) => key.startsWith(`${stage}:`))
+      .flatMap(([, history]) =>
+        (Array.isArray(history) ? history : [history]).flatMap((s) => s?.deviceIds ?? [])
+      ),
+  ];
+  if (fromSends.length) return [...new Set(fromSends.map(String))];
+
+  // Nothing sent yet — use the current artifact so polling can start before the send.
   const fromFiles = Object.entries(run.artifacts ?? {})
     .filter(([key]) => key.startsWith(`${stage}:`))
     .flatMap(([, artifact]) => artifact.deviceIds ?? []);
@@ -418,7 +450,7 @@ function runDeviceIds(run) {
 // Generation
 // ---------------------------------------------------------------------------
 
-runsRouter.post('/:runId/generate', (req, res, next) => {
+runsRouter.post('/:runId/generate', async (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
     const operation = req.body?.operation ?? run.operation;
@@ -432,6 +464,44 @@ runsRouter.post('/:runId/generate', (req, res, next) => {
 
     const built = [];
     const blocked = [];
+
+    // Dead operation: shared sheet — Device Type comes from the group family, not SF assets.
+    if (operation === 'deviceDead') {
+      const template = findTemplate(SHARED_FAMILY, operation);
+      const allIds = runDeviceIds(run);
+      const ids = deviceIdsFilter ? allIds.filter((id) => deviceIdsFilter.has(String(id))) : allIds;
+      if (!ids.length) throw new Error('Select devices at IDMS 7 before generating the Dead CSV.');
+
+      // Build id→family from generatedRows so each device carries its own group's type.
+      const idToFamily = new Map();
+      for (const group of run.groups) {
+        const primary = group.primarySeries ?? primarySeriesOf(getTemplate(group.templateId));
+        if (!primary) continue;
+        for (const line of group.lines) {
+          for (const row of line.generatedRows ?? []) {
+            if (row[primary]) idToFamily.set(String(row[primary]), group.family);
+          }
+        }
+      }
+
+      const deviceEntries = ids.map((id) => ({
+        deviceId: id,
+        deviceType: resolveDeadDeviceType(idToFamily.get(String(id))),
+      }));
+
+      const familyLabel = run.groups[0]?.family?.toUpperCase() ?? 'SHARED';
+      const artifact = buildCsv(template, {
+        trackingId: run.trackingId,
+        fields: run.sharedFields ?? {},
+        rows: planDeadRows(deviceEntries),
+        family: familyLabel,
+      });
+      built.push(saveArtifact(run.runId, artifactKey(operation, SHARED_FAMILY), artifact));
+      appendEvent(run.runId, 'files.generated', artifact.filename);
+      const updated = updateRun(run.runId, (r) => { r.status = 'files-generated'; return r; });
+      res.json({ run: updated, artifacts: built.map((a) => artifactPreview(a)), blocked });
+      return;
+    }
 
     // A family-independent operation produces ONE file for the whole run, not one per family.
     // The received sheet is identical across families and lists every device id in the run.
@@ -583,7 +653,11 @@ runsRouter.get('/:runId/validate', async (req, res, next) => {
     } catch {
       checked = false;
     }
-    const alreadySent = Object.values(run.sends ?? {}).some((s) => s?.ok);
+    // Also skip when any artifact exists — ids were minted for this run so finding them in the
+    // org is expected at any later operation (shipmentUpdate, received, rmaReturned, …).
+    const alreadySent =
+      Object.values(run.sends ?? {}).some((s) => s?.ok) ||
+      Object.keys(run.artifacts ?? {}).length > 0;
     groups.org = [validateIdsFree({ takenIds: taken, checked, alreadySent })];
 
     // Life cycle position. Read in the same pass as the collision check, and reported as a
@@ -736,6 +810,10 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
           filename: artifact.filename,
           to: dl.to,
           subject: dl.subject,
+          // Snapshot at compose time — confirmSend uses this so a regeneration between
+          // compose and confirm does not corrupt the send record with the new file's ids.
+          deviceIds: artifact.deviceIds ?? [],
+          rowCount: artifact.rowCount,
           composedAt: new Date().toISOString(),
         };
         return r;
@@ -809,7 +887,11 @@ runsRouter.post('/:runId/send/confirm', async (req, res, next) => {
     if (!dl) throw new Error(`"${operation}" does not send mail.`);
 
     const key = artifactKey(operation, family);
-    const artifact = loadArtifact(run.runId, key);
+    // Use the snapshot captured at compose time when available — the artifact on disk may
+    // have been regenerated between compose and confirm, so loadArtifact would return the
+    // wrong deviceIds and corrupt the duplicate-send guard for the actual sent file.
+    const composed = run.pendingCompose?.key === key ? run.pendingCompose : null;
+    const artifact = composed ?? loadArtifact(run.runId, key);
 
     const sentItems = await checkSentItems({ subject: dl.subject });
 

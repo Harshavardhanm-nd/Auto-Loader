@@ -230,3 +230,16 @@ export function planWizardRows(lines, primarySeriesName) {
 export function planExistingRows(deviceIds, line = {}) {
   return deviceIds.map((id) => ({ existing: { device_id: String(id) }, line }));
 }
+
+/**
+ * Plan for the Dead template: one row per device, carrying the device type resolved from
+ * the Asset's Device_Category__c at generate time.
+ *
+ * @param {Array<{deviceId: string, deviceType: string}>} deviceEntries
+ */
+export function planDeadRows(deviceEntries) {
+  return deviceEntries.map(({ deviceId, deviceType }) => ({
+    existing: { device_id: String(deviceId), device_type: String(deviceType) },
+    line: {},
+  }));
+}

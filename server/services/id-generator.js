@@ -84,8 +84,7 @@ export function describeCursors(env, templateId, series) {
 
 function formatValue(seriesDef, n) {
   if (seriesDef.type === 'prefixed') return `${seriesDef.prefix}${n}`;
-  // Numeric series are zero-padded to their declared width so a value never narrows.
-  return String(n).padStart(seriesDef.digits ?? String(n).length, '0');
+  return String(n);
 }
 
 /**
