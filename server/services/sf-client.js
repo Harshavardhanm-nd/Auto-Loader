@@ -318,7 +318,8 @@ export async function findTakenDeviceIds(env, candidateIds) {
 
   const asked = new Set(ids);
   const taken = new Set();
-  const CHUNK = 400;
+  // 3 OR clauses per query; keep URL under Salesforce's ~8 KB limit
+  const CHUNK = 100;
   for (let i = 0; i < ids.length; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK);
     const inList = soqlInList(chunk);
@@ -349,10 +350,15 @@ export async function fetchAssetsByDeviceId(env, deviceIds) {
   const ids = [...new Set(deviceIds.map(String))].filter(Boolean);
   if (!ids.length) return [];
 
+  // SF strips leading zeros from Asset.Name — query with the stripped form but remap back so
+  // the rest of the pipeline (summarisePolling) sees the original padded id it allocated.
+  const strippedToOriginal = new Map(ids.map((id) => [id.replace(/^0+/, '') || id, id]));
+  const queryIds = [...strippedToOriginal.keys()];
+
   const out = [];
   const CHUNK = 200;
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK);
+  for (let i = 0; i < queryIds.length; i += CHUNK) {
+    const chunk = queryIds.slice(i, i + CHUNK);
     const records = await query(
       env,
       `SELECT ${FIELDS_FOR_WATCH}
@@ -362,7 +368,7 @@ export async function fetchAssetsByDeviceId(env, deviceIds) {
     );
     out.push(...records);
   }
-  return out.map(shapeAsset);
+  return out.map((a) => shapeAsset(a));
 }
 
 /** Everything for one order, including devices not yet attached to it. */
@@ -528,11 +534,20 @@ export function rescoreSnapshot(stage, snapshot) {
   const expectation = STAGE_EXPECTATIONS[stage];
   if (!expectation || !snapshot?.rows?.length) return snapshot;
 
-  const rows = snapshot.rows.map((row) => ({
-    ...row,
-    reached: row.syncStatus === expectation.success,
-    aheadOfStage: positionInChain(stage, row.syncStatus) === 'ahead',
-  }));
+  const rows = snapshot.rows.map((row) => {
+    const chainPos = positionInChain(stage, row.syncStatus);
+    // Fall back to IDMS comparison when the sync status is off-chain (e.g. NEW_ORDER_FULFILMENT).
+    const idmsAhead =
+      chainPos === 'unknown' &&
+      expectation.movesTo !== null &&
+      row.idmsStatus != null &&
+      Number(row.idmsStatus) > expectation.movesTo;
+    return {
+      ...row,
+      reached: row.syncStatus === expectation.success,
+      aheadOfStage: chainPos === 'ahead' || idmsAhead,
+    };
+  });
   return { ...snapshot, ...tallyRows(rows) };
 }
 

@@ -259,9 +259,8 @@
     {
       "from": 5,
       "to": 7,
-      "label": "Received by Netradyne",
-      "driver": { "kind": "external", "actor": "Netradyne receiving" },
-      "uncertain": "Kept external rather than mapped to Received at 3PL: the only received template in the repo is titled \"Received at 3PL\", and a warranty return arriving at Netradyne may well be a different sheet."
+      "label": "RMA Returned",
+      "driver": { "kind": "operation", "operation": "rmaReturned" }
     },
     {
       "from": 11,
@@ -352,6 +351,7 @@
     "initialLoad": "INITIAL_DEVICE_LOAD",
     "shipmentUpdate": "SHIPMENT_UPDATE",
     "received": "DEVICE_RECEIVED_AT_3PL",
-    "dataUpdate": "DATA_UPDATE"
+    "dataUpdate": "DATA_UPDATE",
+    "rmaReturned": "FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER"
   }
 }
