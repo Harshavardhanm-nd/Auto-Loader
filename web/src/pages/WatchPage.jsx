@@ -602,7 +602,14 @@ function filterViewRows(rows, tab) {
       );
     case 'installed':  return rows.filter((r) => Number(r.idmsStatus) === 4);
     case 'rmaPending': return rows.filter((r) => Number(r.idmsStatus) === 10);
-    case 'rmaInitiated':  return rows.filter((r) => Number(r.idmsStatus) === 5);
+    case 'rmaInitiated':
+      return rows.filter(
+        (r) =>
+          Number(r.idmsStatus) === 5 &&
+          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER' &&
+          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_SUCCESS' &&
+          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_FAILED',
+      );
     case 'deadView':
       return rows.filter(
         (r) =>

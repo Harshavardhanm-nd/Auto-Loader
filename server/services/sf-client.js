@@ -506,7 +506,7 @@ export function summarisePolling(stage, deviceIds, assets) {
       expectation.movesTo !== null &&
       asset.idmsStatus != null &&
       (Number(asset.idmsStatus) > expectation.movesTo ||
-        (Number(asset.idmsStatus) === expectation.movesTo && asset.terminal));
+        Number(asset.idmsStatus) === expectation.movesTo);
     return {
       // Where this device's own status sits relative to the stage being watched. See
       // `positionInChain` — this is what stops a device that has not reached the stage yet
@@ -563,7 +563,7 @@ export function rescoreSnapshot(stage, snapshot) {
       expectation.movesTo !== null &&
       row.idmsStatus != null &&
       (Number(row.idmsStatus) > expectation.movesTo ||
-        (Number(row.idmsStatus) === expectation.movesTo && classifySyncStatus(row.syncStatus).terminal));
+        Number(row.idmsStatus) === expectation.movesTo);
     return {
       ...row,
       reached: row.syncStatus === expectation.success,
