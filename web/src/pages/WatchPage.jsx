@@ -427,6 +427,18 @@ export default function WatchPage({
               where this left off.
             </Callout>
           ) : null}
+          {fullSnapshot?.notYet?.length > 0 ? (
+            <Callout tone="muted" title={`${fullSnapshot.notYet.length} device(s) not yet at this stage`}>
+              These devices carry an earlier operation&apos;s sync status — the{' '}
+              {stageMeta.label.toLowerCase()} email has not been processed for them yet. They will
+              appear here once the integration writes a{' '}
+              <code>{stageMeta.label.toUpperCase().replace(/ /g, '_')}</code> status.
+              <div className="mono small" style={{ marginTop: '0.45rem' }}>
+                {fullSnapshot.notYet.map((r) => r.deviceId).join(', ')}
+              </div>
+            </Callout>
+          ) : null}
+
           {snapshot.lastError ? (
             <Callout tone="warn" title="Last poll errored">
               {snapshot.lastError}
@@ -585,26 +597,18 @@ function filterViewRows(rows, tab) {
       return rows.filter(
         (r) =>
           r.syncStatus === 'NEW_ORDER_FULFILMENT' ||
+          r.syncStatus === 'NEW_ORDER_FULFILMENT_SYNC_FAILED' ||
           (Number(r.idmsStatus) === 2 && r.syncStatus === 'NEW_ORDER_FULFILMENT_SYNC_SUCCESS'),
       );
     case 'installed':  return rows.filter((r) => Number(r.idmsStatus) === 4);
     case 'rmaPending': return rows.filter((r) => Number(r.idmsStatus) === 10);
-    case 'rmaInitiated':
-      return rows.filter(
-        (r) =>
-          Number(r.idmsStatus) === 5 &&
-          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER' &&
-          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_SUCCESS' &&
-          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_FAILED',
-      );
+    case 'rmaInitiated':  return rows.filter((r) => Number(r.idmsStatus) === 5);
     case 'deadView':
-      // Sync status values for "Non Repairable By Repair Partner" — confirm exact strings with
-      // the Salesforce org if these do not match.
       return rows.filter(
         (r) =>
           r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER' ||
-          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_SUCCESS' ||
-          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_FAILED',
+          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_FAILED' ||
+          (r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_SUCCESS' && Number(r.idmsStatus) === 9),
       );
     default: return [];
   }

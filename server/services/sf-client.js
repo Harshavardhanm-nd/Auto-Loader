@@ -492,11 +492,29 @@ export function summarisePolling(stage, deviceIds, assets) {
     }
     const reached = asset.syncStatus === expectation.success;
     const failedHere = asset.syncStatus === expectation.failed;
+    const chainPos = positionInChain(stage, asset.syncStatus);
+    // A terminal unknown status at exactly the expected IDMS means the device completed this
+    // stage but a later external operation then overwrote the sync status (e.g.
+    // NEW_ORDER_FULFILMENT_SYNC_FAILED appearing after DEVICE_RECEIVED_AT_3PL_SYNC_SUCCESS).
+    // Guard: never fire when the sync status is already this operation's own — that status
+    // means the device IS at this stage, not past it (fixes rmaReturned off-chain case).
+    const idmsAtOrAhead =
+      chainPos === 'unknown' &&
+      !reached &&
+      asset.syncStatus !== expectation.pending &&
+      !failedHere &&
+      expectation.movesTo !== null &&
+      asset.idmsStatus != null &&
+      (Number(asset.idmsStatus) > expectation.movesTo ||
+        (Number(asset.idmsStatus) === expectation.movesTo && asset.terminal));
     return {
       // Where this device's own status sits relative to the stage being watched. See
       // `positionInChain` — this is what stops a device that has not reached the stage yet
       // being counted as a success just because it finished an earlier one.
-      aheadOfStage: positionInChain(stage, asset.syncStatus) === 'ahead',
+      aheadOfStage: chainPos === 'ahead' || idmsAtOrAhead,
+      // True when the device carries an earlier operation's sync status and has not yet had
+      // this operation applied — distinct from aheadOfStage so the tab can hide these rows.
+      behindStage: chainPos === 'behind',
       deviceId,
       present: true,
       assetId: asset.id,
@@ -536,16 +554,21 @@ export function rescoreSnapshot(stage, snapshot) {
 
   const rows = snapshot.rows.map((row) => {
     const chainPos = positionInChain(stage, row.syncStatus);
-    // Fall back to IDMS comparison when the sync status is off-chain (e.g. NEW_ORDER_FULFILMENT).
-    const idmsAhead =
+    const isOwn = row.syncStatus === expectation.success ||
+                  row.syncStatus === expectation.pending ||
+                  row.syncStatus === expectation.failed;
+    const idmsAtOrAhead =
       chainPos === 'unknown' &&
+      !isOwn &&
       expectation.movesTo !== null &&
       row.idmsStatus != null &&
-      Number(row.idmsStatus) > expectation.movesTo;
+      (Number(row.idmsStatus) > expectation.movesTo ||
+        (Number(row.idmsStatus) === expectation.movesTo && classifySyncStatus(row.syncStatus).terminal));
     return {
       ...row,
       reached: row.syncStatus === expectation.success,
-      aheadOfStage: chainPos === 'ahead' || idmsAhead,
+      aheadOfStage: chainPos === 'ahead' || idmsAtOrAhead,
+      behindStage: chainPos === 'behind' && !idmsAtOrAhead,
     };
   });
   return { ...snapshot, ...tallyRows(rows) };
@@ -564,11 +587,16 @@ export function rescoreSnapshot(stage, snapshot) {
  */
 export function splitByStagePosition(summary) {
   const movedOn = summary.rows.filter((r) => r.aheadOfStage === true);
-  if (!movedOn.length) return { ...summary, atStage: null, movedOn: [] };
+  // Devices whose sync status belongs to an earlier operation — they have not had this stage
+  // applied yet and should not inflate the "waiting" count for this tab.
+  const notYet = summary.rows.filter((r) => r.behindStage === true);
+  if (!movedOn.length && !notYet.length) return { ...summary, atStage: null, movedOn: [], notYet: [] };
+  const atStageRows = summary.rows.filter((r) => r.aheadOfStage !== true && r.behindStage !== true);
   return {
     ...summary,
-    atStage: tallyRows(summary.rows.filter((r) => r.aheadOfStage !== true)),
+    atStage: tallyRows(atStageRows),
     movedOn: movedOn.map((r) => ({ deviceId: r.deviceId, syncStatus: r.syncStatus, stage: r.stage })),
+    notYet: notYet.map((r) => ({ deviceId: r.deviceId, syncStatus: r.syncStatus, stage: r.stage })),
   };
 }
 
