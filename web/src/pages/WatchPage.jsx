@@ -161,12 +161,30 @@ export default function WatchPage({
     }
   };
 
-  const sendToShipmentUpdate = async () => {
-    setBusy('shipmentGen');
+  const getNextOperation = () => {
+    // For Octo: initialLoad → dataUpdate → shipmentUpdate
+    // For others: initialLoad → shipmentUpdate
+    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+
+    if (stage === 'initialLoad') {
+      return isOctoRun ? 'dataUpdate' : 'shipmentUpdate';
+    }
+    if (stage === 'dataUpdate') {
+      return 'shipmentUpdate';
+    }
+    return 'shipmentUpdate'; // default
+  };
+
+  const sendToNextOperation = async () => {
+    const operation = getNextOperation();
+    const busyKey = `${operation}Gen`;
+    const operationLabel = operation === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
+
+    setBusy(busyKey);
     try {
-      await api.generate(runId, 'shipmentUpdate', [...selected]);
+      await api.generate(runId, operation, [...selected]);
       await refreshRun();
-      setReviewOperation('shipmentUpdate');
+      setReviewOperation(operation);
       goto('review');
     } catch (err) {
       onError(err);
@@ -174,6 +192,8 @@ export default function WatchPage({
       setBusy(null);
     }
   };
+
+  const sendToShipmentUpdate = sendToNextOperation;
 
   const sendToReceived = async () => {
     setBusy('receivedGen');
@@ -572,22 +592,43 @@ export default function WatchPage({
                   >
                     {busy === 'deviceDeadGen' ? 'Generating…' : 'Move Assets to Dead'}
                   </button>
-                ) : receivedEligibleRows.length > 0 ? (
-                  <button
-                    className="btn small"
-                    disabled={busy === 'receivedGen'}
-                    onClick={sendToReceived}
-                  >
-                    {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
-                  </button>
+                ) : (() => {
+                  const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+                  return receivedEligibleRows.length > 0 && !isOctoRun ? (
+                    <button
+                      className="btn small"
+                      disabled={busy === 'receivedGen'}
+                      onClick={sendToReceived}
+                    >
+                      {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
+                    </button>
+                  ) : null;
+                })() ? (
+                  (console.log('received shown'), (
+                    <button
+                      className="btn small"
+                      disabled={busy === 'receivedGen'}
+                      onClick={sendToReceived}
+                    >
+                      {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
+                    </button>
+                  ))
                 ) : (
-                  <button
-                    className="btn small"
-                    disabled={busy === 'shipmentGen'}
-                    onClick={sendToShipmentUpdate}
-                  >
-                    {busy === 'shipmentGen' ? 'Generating…' : 'Generate Shipment Update CSV & Go to Review'}
-                  </button>
+                  (() => {
+                    const nextOp = getNextOperation();
+                    const busyKey = `${nextOp}Gen`;
+                    const isBusy = busy === busyKey;
+                    const opLabel = nextOp === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
+                    return (
+                      <button
+                        className="btn small"
+                        disabled={isBusy}
+                        onClick={sendToNextOperation}
+                      >
+                        {isBusy ? 'Generating…' : `Generate ${opLabel} CSV & Go to Review`}
+                      </button>
+                    );
+                  })()
                 )}
               </div>
             </Sheet>
