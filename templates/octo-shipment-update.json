@@ -1,0 +1,207 @@
+{
+  "id": "octo-shipment-update",
+  "label": "Octo / D-810 — Shipment Update",
+  "family": "octo",
+  "familyLabel": "Octo (D-810)",
+  "kind": "device",
+  "operation": "shipmentUpdate",
+  "status": "verified",
+  "sourceTemplate": "Octo Shipment update.csv",
+  "bytes": {
+    "bom": false,
+    "lineEnding": "\r\n",
+    "trailingNewline": true
+  },
+  "filenamePattern": "Shipment_Update_Octo_{trackingId}.csv",
+  "series": {
+    "device_id": {
+      "type": "numeric",
+      "digits": 10,
+      "sampleStart": "1250730256"
+    },
+    "sim_serial": {
+      "type": "numeric",
+      "digits": 9,
+      "sampleStart": "890000256"
+    },
+    "device_imei": {
+      "type": "numeric",
+      "digits": 9,
+      "sampleStart": "890000256"
+    },
+    "wired_speaker_serial": {
+      "type": "numeric",
+      "digits": 9,
+      "sampleStart": "330099256"
+    },
+    "native_cam_serial": {
+      "type": "numeric",
+      "digits": 8,
+      "sampleStart": "70007256"
+    }
+  },
+  "defaults": {
+    "product_type": "Octo",
+    "sku_number": "DE811301USA01001",
+    "model_number": "D-810",
+    "device_region": "US",
+    "shipment_vendor": "CHR",
+    "batch_number": "Batch 2",
+    "service_provider": "TMOIOTSS",
+    "system_pn": "103-10-00007",
+    "device_category": "NAMZ",
+    "manufacturing_partner": "VVDN",
+    "shipment_to_3pl": "DCL",
+    "invoice_number": "NA",
+    "po_number": "PO480",
+    "wired_speaker_sku": "ACCET1WRDALRTBN",
+    "native_cam_sku": "ACCDC1DR20",
+    "shipment_tracking_id": "NAZ110003"
+  },
+  "columns": [
+    {
+      "name": "device_id(required)",
+      "source": "generated.device_id",
+      "required": true
+    },
+    {
+      "name": "product_type(required)",
+      "source": "field.product_type",
+      "required": true
+    },
+    {
+      "name": "sku_number",
+      "source": "line.sku"
+    },
+    {
+      "name": "model_number",
+      "source": "field.model_number"
+    },
+    {
+      "name": "sim_serial",
+      "source": "generated.sim_serial"
+    },
+    {
+      "name": "device_imei",
+      "source": "generated.device_imei"
+    },
+    {
+      "name": "sdcard_serial",
+      "source": "empty"
+    },
+    {
+      "name": "sdcard_size",
+      "source": "empty"
+    },
+    {
+      "name": "wifi_mac",
+      "source": "empty"
+    },
+    {
+      "name": "hw_version",
+      "source": "empty"
+    },
+    {
+      "name": "os_version",
+      "source": "empty"
+    },
+    {
+      "name": "ota_version",
+      "source": "empty"
+    },
+    {
+      "name": "owner_username",
+      "source": "empty"
+    },
+    {
+      "name": "device_region(required)",
+      "source": "field.device_region",
+      "required": true
+    },
+    {
+      "name": "registration_key",
+      "source": "empty"
+    },
+    {
+      "name": "shipment_tracking_id(required)",
+      "source": "field.shipment_tracking_id",
+      "required": true
+    },
+    {
+      "name": "shipment_vendor",
+      "source": "field.shipment_vendor"
+    },
+    {
+      "name": "batch_number",
+      "source": "field.batch_number"
+    },
+    {
+      "name": "bt_mac",
+      "source": "empty"
+    },
+    {
+      "name": "service_provider(required)",
+      "source": "field.service_provider",
+      "required": true
+    },
+    {
+      "name": "system_pn(required)",
+      "source": "field.system_pn",
+      "required": true
+    },
+    {
+      "name": "device_category(required)",
+      "source": "field.device_category",
+      "required": true
+    },
+    {
+      "name": "manufacturing_partner",
+      "source": "field.manufacturing_partner"
+    },
+    {
+      "name": "shipment_to_3pl",
+      "source": "field.shipment_to_3pl"
+    },
+    {
+      "name": "invoice_number",
+      "source": "field.invoice_number"
+    },
+    {
+      "name": "po_number",
+      "source": "field.po_number"
+    },
+    {
+      "name": "D2C_Sales_Order#",
+      "source": "empty"
+    },
+    {
+      "name": "D2C_shipped_date_(YYYY-MM-DD)",
+      "source": "today"
+    },
+    {
+      "name": "Wired_Speaker _SKU(required)",
+      "source": "field.wired_speaker_sku",
+      "required": true
+    },
+    {
+      "name": "Wired_Speaker_Serial_No(required)",
+      "source": "generated.wired_speaker_serial",
+      "required": true
+    },
+    {
+      "name": "Native_Cam_SKU(required)",
+      "source": "field.native_cam_sku",
+      "required": true
+    },
+    {
+      "name": "Native_Cam_Serial_No(required)",
+      "source": "generated.native_cam_serial",
+      "required": true
+    }
+  ],
+  "notes": [
+    "Octo bundles its accessories inline: four extra columns carry the wired speaker and native camera SKU and serial. There is no separate accessory file for this family.",
+    "The header contains \"Wired_Speaker _SKU(required)\" with a space before _SKU. That is in the real sheet and is reproduced byte for byte.",
+    "wifi_mac and bt_mac are empty in this version of the template."
+  ]
+}

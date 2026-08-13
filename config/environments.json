@@ -111,8 +111,8 @@
             "body": "Please find the attached Undo Device Dead CSV."
           },
           "dataUpdate": {
-            "$comment": "NOT in the supplied DL list. Haptic_Data_Update.csv has no confirmed mailbox — do not guess, since a wrong address is a silent no-op or a double load.",
-            "to": "REPLACE_ME_no_data_update_DL_supplied@netradyne.com",
+            "$comment": "Same mailbox as initialLoad — used for Octo data corrections.",
+            "to": "Asset-Shipped-From-MFR-Testing@netradyne.com",
             "subject": "Data Update",
             "body": "Please find the attached Data Update CSV."
           },
@@ -195,8 +195,8 @@
             "body": "Please find the attached Non-Repairable Asset CSV."
           },
           "dataUpdate": {
-            "$comment": "NOT supplied for either environment.",
-            "to": "REPLACE_ME_no_data_update_DL_supplied",
+            "$comment": "Same as initialLoad for Staging — Apex email service.",
+            "to": "assets_shipped_from_vvdn@n-kcf9xc8epagbqzn8s2n0auzvvhctyaemf5dyqsn4gzj7fp05t.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
             "subject": "Data Update",
             "body": "Please find the attached Data Update CSV."
           },

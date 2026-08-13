@@ -1,10 +1,10 @@
 {
-  "id": "octo-update-load",
-  "label": "Octo / D-810 — Update Load",
+  "id": "octo-data-update",
+  "label": "Octo / D-810 — Data Update",
   "family": "octo",
   "familyLabel": "Octo (D-810)",
   "kind": "device",
-  "operation": "updateLoad",
+  "operation": "dataUpdate",
   "status": "verified",
   "sourceTemplate": "Octo Shipment update.csv",
   "bytes": {
@@ -12,7 +12,7 @@
     "lineEnding": "\r\n",
     "trailingNewline": true
   },
-  "filenamePattern": "Update_Load_Octo_{trackingId}.csv",
+  "filenamePattern": "Data_Update_Octo_{trackingId}.csv",
   "series": {
     "device_id": {
       "type": "numeric",
@@ -200,7 +200,6 @@
     }
   ],
   "notes": [
-    "Classified as \"updateLoad\", sharing the initial-load mailbox address.",
     "Octo bundles its accessories inline: four extra columns carry the wired speaker and native camera SKU and serial. There is no separate accessory file for this family.",
     "The header contains \"Wired_Speaker _SKU(required)\" with a space before _SKU. That is in the real sheet and is reproduced byte for byte.",
     "wifi_mac and bt_mac are empty in this version of the template."
