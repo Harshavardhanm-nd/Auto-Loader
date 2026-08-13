@@ -145,6 +145,13 @@
     },
     {
       "from": -2,
+      "to": -2,
+      "label": "Data Update",
+      "driver": { "kind": "operation", "operation": "dataUpdate" },
+      "note": "Octo requires this data correction step after initial load. Other families may skip it."
+    },
+    {
+      "from": -2,
       "to": -1,
       "label": "Shipment Load",
       "driver": { "kind": "operation", "operation": "shipmentUpdate" }

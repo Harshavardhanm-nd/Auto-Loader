@@ -1107,7 +1107,20 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     // the stages listed instead of a suggestion, because acting on the majority would leave the
     // rest behind silently.
     const position = stages.unanimous;
-    const next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
+    let next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
+
+    // For Octo family, enforce mandatory dataUpdate before shipmentUpdate
+    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+    const dataUpdateSent = Object.entries(run.sends ?? {}).some(
+      ([, s]) => s?.ok && s.operation === 'dataUpdate'
+    );
+    if (isOctoRun && !dataUpdateSent && position?.code === -2) {
+      // Filter to only show dataUpdate, hide shipmentUpdate for Octo until dataUpdate is sent
+      next = {
+        mine: next.mine.filter((step) => step.operation === 'dataUpdate'),
+        theirs: next.theirs,
+      };
+    }
 
     res.json({
       runId: run.runId,
