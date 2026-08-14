@@ -430,7 +430,12 @@ function stageDeviceIds(run, stage) {
   const fromFiles = Object.entries(run.artifacts ?? {})
     .filter(([key]) => key.startsWith(`${stage}:`))
     .flatMap(([, artifact]) => artifact.deviceIds ?? []);
-  return fromFiles.length ? [...new Set(fromFiles.map(String))] : runDeviceIds(run);
+  if (fromFiles.length) return [...new Set(fromFiles.map(String))];
+
+  // Only fall back to the full run device list for the initial load — every other operation
+  // applies to an operator-selected subset, so an empty result is the correct answer when
+  // nothing has been generated or sent for that stage yet.
+  return stage === 'initialLoad' ? runDeviceIds(run) : [];
 }
 
 /** The primary ids this run minted. */
@@ -1051,7 +1056,10 @@ function scopeSnapshot(run, stage, snapshot) {
   // relative to the stage (so a snapshot written before that existed is judged the same way),
   // then split off the ones that have moved on.
   const scope = new Set(stageDeviceIds(run, stage).map(String));
-  const rows = scope.size ? snapshot.rows.filter((row) => scope.has(String(row.deviceId))) : snapshot.rows;
+  // If this stage has no device IDs (email not yet sent, no artifact), suppress the snapshot
+  // entirely so stale data from a previous poll does not persist on screen.
+  if (!scope.size) return null;
+  const rows = snapshot.rows.filter((row) => scope.has(String(row.deviceId)));
   const scoped = rows.length === snapshot.rows.length ? snapshot : { ...snapshot, ...tallyRows(rows) };
   return splitByStagePosition(rescoreSnapshot(stage, scoped));
 }
