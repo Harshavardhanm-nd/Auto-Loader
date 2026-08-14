@@ -535,6 +535,7 @@ runsRouter.post('/:runId/generate', async (req, res, next) => {
       return;
     }
 
+    const allAccessories = {};
     for (const group of run.groups) {
       let template;
       try {
@@ -583,6 +584,20 @@ runsRouter.post('/:runId/generate', async (req, res, next) => {
         rows,
       });
       built.push(saveArtifact(run.runId, artifactKey(operation, group.family), artifact));
+
+      // For Octo initialLoad, store accessory serial mappings for later polling
+      if (group.family === 'octo' && operation === 'initialLoad') {
+        const primary = group.primarySeries ?? primarySeriesOf(template);
+        for (const row of rows) {
+          const deviceId = primary ? row.generated[primary] : Object.values(row.generated)[0];
+          if (deviceId) {
+            allAccessories[deviceId] = {
+              wiredSpeaker: row.generated.wired_speaker_serial,
+              nativeCam: row.generated.native_cam_serial,
+            };
+          }
+        }
+      }
     }
 
     // The wizard upload is per-run, not per-family: it lists the serials the ORDER needs.
@@ -604,6 +619,10 @@ runsRouter.post('/:runId/generate', async (req, res, next) => {
     appendEvent(run.runId, 'files.generated', built.map((b) => b.filename).join(', '));
     const updated = updateRun(run.runId, (r) => {
       r.status = 'files-generated';
+      if (Object.keys(allAccessories).length > 0) {
+        r.accessories ??= {};
+        Object.assign(r.accessories, allAccessories);
+      }
       return r;
     });
 
@@ -1024,13 +1043,72 @@ runsRouter.post('/:runId/poll/:stage/once', async (req, res, next) => {
   }
 });
 
-runsRouter.get('/:runId/poll/:stage', (req, res, next) => {
+runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
+    let snapshot = scopeSnapshot(run, req.params.stage, run.polling?.[req.params.stage] ?? null);
+
+    // For Octo runs, fetch and add accessory status to snapshot rows
+    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+    if (isOctoRun && run.accessories && snapshot?.rows?.length) {
+      try {
+        const accessorySerials = [];
+        for (const acc of Object.values(run.accessories)) {
+          if (acc.wiredSpeaker) accessorySerials.push(acc.wiredSpeaker);
+          if (acc.nativeCam) accessorySerials.push(acc.nativeCam);
+        }
+
+        if (accessorySerials.length) {
+          const accessories = await fetchAssetsByDeviceId(run.env, accessorySerials);
+          const byAccessoryId = new Map(accessories.map((a) => [a.deviceId, a]));
+
+          // Add accessories to each row
+          snapshot = {
+            ...snapshot,
+            rows: snapshot.rows.map((row) => {
+              if (!run.accessories[row.deviceId]) return row;
+
+              const deviceAccessories = [];
+              const acc = run.accessories[row.deviceId];
+              if (acc.wiredSpeaker) {
+                const accAsset = byAccessoryId.get(String(acc.wiredSpeaker)) ?? null;
+                deviceAccessories.push({
+                  type: 'Wired Speaker',
+                  serialId: acc.wiredSpeaker,
+                  present: Boolean(accAsset),
+                  stage: classifyStage(accAsset?.idmsStatus ?? null),
+                  syncStatus: accAsset?.syncStatus ?? null,
+                  assetStatus: accAsset?.assetStatus ?? null,
+                });
+              }
+              if (acc.nativeCam) {
+                const accAsset = byAccessoryId.get(String(acc.nativeCam)) ?? null;
+                deviceAccessories.push({
+                  type: 'Native Camera',
+                  serialId: acc.nativeCam,
+                  present: Boolean(accAsset),
+                  stage: classifyStage(accAsset?.idmsStatus ?? null),
+                  syncStatus: accAsset?.syncStatus ?? null,
+                  assetStatus: accAsset?.assetStatus ?? null,
+                });
+              }
+
+              return {
+                ...row,
+                accessories: deviceAccessories.length > 0 ? deviceAccessories : undefined,
+              };
+            }),
+          };
+        }
+      } catch (err) {
+        // If accessory fetch fails, still return the snapshot without accessories
+      }
+    }
+
     res.json({
       stage: req.params.stage,
       running: isPolling(run.runId, req.params.stage),
-      snapshot: scopeSnapshot(run, req.params.stage, run.polling?.[req.params.stage] ?? null),
+      snapshot,
       result: run.result ?? null,
     });
   } catch (err) {
@@ -1085,18 +1163,61 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     const operations = loadOperations();
 
     let assets = null;
+    let accessories = null;
     let readError = null;
     try {
       if (deviceIds.length) assets = await fetchAssetsByDeviceId(run.env, deviceIds);
+
+      // For Octo runs, also fetch accessory status
+      const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+      if (isOctoRun && run.accessories) {
+        const accessorySerials = [];
+        for (const acc of Object.values(run.accessories)) {
+          if (acc.wiredSpeaker) accessorySerials.push(acc.wiredSpeaker);
+          if (acc.nativeCam) accessorySerials.push(acc.nativeCam);
+        }
+        if (accessorySerials.length) {
+          accessories = await fetchAssetsByDeviceId(run.env, accessorySerials);
+        }
+      }
     } catch (err) {
       readError = err.message;
     }
 
     const byDeviceId = new Map((assets ?? []).map((a) => [a.deviceId, a]));
+    const byAccessoryId = new Map((accessories ?? []).map((a) => [a.deviceId, a]));
     const raw = [];
     const devices = deviceIds.map((deviceId) => {
       const asset = byDeviceId.get(String(deviceId)) ?? null;
       raw.push(asset?.idmsStatus ?? null);
+
+      const deviceAccessories = [];
+      if (run.accessories && run.accessories[deviceId]) {
+        const acc = run.accessories[deviceId];
+        if (acc.wiredSpeaker) {
+          const accAsset = byAccessoryId.get(String(acc.wiredSpeaker)) ?? null;
+          deviceAccessories.push({
+            type: 'Wired Speaker',
+            serialId: acc.wiredSpeaker,
+            present: Boolean(accAsset),
+            stage: classifyStage(accAsset?.idmsStatus ?? null),
+            syncStatus: accAsset?.syncStatus ?? null,
+            assetStatus: accAsset?.assetStatus ?? null,
+          });
+        }
+        if (acc.nativeCam) {
+          const accAsset = byAccessoryId.get(String(acc.nativeCam)) ?? null;
+          deviceAccessories.push({
+            type: 'Native Camera',
+            serialId: acc.nativeCam,
+            present: Boolean(accAsset),
+            stage: classifyStage(accAsset?.idmsStatus ?? null),
+            syncStatus: accAsset?.syncStatus ?? null,
+            assetStatus: accAsset?.assetStatus ?? null,
+          });
+        }
+      }
+
       return {
         deviceId,
         present: Boolean(asset),
@@ -1105,6 +1226,7 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
         assetStatus: asset?.assetStatus ?? null,
         cpqOrderNumber: asset?.cpqOrderNumber ?? null,
         lastModifiedDate: asset?.lastModifiedDate ?? null,
+        accessories: deviceAccessories.length > 0 ? deviceAccessories : undefined,
       };
     });
 
@@ -1115,7 +1237,20 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     // the stages listed instead of a suggestion, because acting on the majority would leave the
     // rest behind silently.
     const position = stages.unanimous;
-    const next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
+    let next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
+
+    // For Octo family, enforce mandatory dataUpdate before shipmentUpdate
+    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+    const dataUpdateSent = Object.entries(run.sends ?? {}).some(
+      ([, s]) => s?.ok && s.operation === 'dataUpdate'
+    );
+    if (isOctoRun && !dataUpdateSent && position?.code === -2) {
+      // Filter to only show dataUpdate, hide shipmentUpdate for Octo until dataUpdate is sent
+      next = {
+        mine: next.mine.filter((step) => step.operation === 'dataUpdate'),
+        theirs: next.theirs,
+      };
+    }
 
     res.json({
       runId: run.runId,

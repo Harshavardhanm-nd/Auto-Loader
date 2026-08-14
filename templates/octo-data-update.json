@@ -1,58 +1,48 @@
 {
-  "id": "octo-update-load",
-  "label": "Octo / D-810 — Update Load",
+  "id": "octo-data-update",
+  "label": "Octo / D-810 — Data Update",
   "family": "octo",
   "familyLabel": "Octo (D-810)",
   "kind": "device",
-  "operation": "updateLoad",
+  "operation": "dataUpdate",
   "status": "verified",
-  "sourceTemplate": "Octo Update Load NAZ110001.csv",
+  "sourceTemplate": "Octo Shipment update.csv",
   "bytes": {
     "bom": false,
     "lineEnding": "\r\n",
     "trailingNewline": true
   },
-  "filenamePattern": "Update_Load_Octo_{trackingId}.csv",
+  "filenamePattern": "Data_Update_Octo_{trackingId}.csv",
   "series": {
     "device_id": {
       "type": "numeric",
-      "digits": 9,
-      "sampleStart": "888800201"
+      "digits": 10,
+      "sampleStart": "1250730256"
     },
     "sim_serial": {
       "type": "numeric",
       "digits": 9,
-      "sampleStart": "234100901"
+      "sampleStart": "890000256"
     },
     "device_imei": {
       "type": "numeric",
-      "digits": 10,
-      "sampleStart": "8400990101"
-    },
-    "wifi_mac": {
-      "type": "prefixed",
-      "prefix": "1c:ce:51:b1:05:c",
-      "sampleStart": "21"
-    },
-    "bt_mac": {
-      "type": "prefixed",
-      "prefix": "1C:CE:51:B1:05:C",
-      "sampleStart": "21"
+      "digits": 9,
+      "sampleStart": "890000256"
     },
     "wired_speaker_serial": {
       "type": "numeric",
-      "digits": 10,
-      "sampleStart": "3300990201"
+      "digits": 9,
+      "sampleStart": "330099256"
     },
     "native_cam_serial": {
       "type": "numeric",
-      "digits": 10,
-      "sampleStart": "7000786101"
+      "digits": 8,
+      "sampleStart": "70007256"
     }
   },
   "defaults": {
     "product_type": "Octo",
-    "sku_number": "D810OCTO",
+    "sku_number": "DE811301USA01001",
     "model_number": "D-810",
     "device_region": "US",
     "shipment_vendor": "CHR",
@@ -64,16 +54,10 @@
     "shipment_to_3pl": "DCL",
     "invoice_number": "NA",
     "po_number": "PO480",
-    "wired_speaker_sku": "WIREDSP",
-    "native_cam_sku": "NATIVECAM"
+    "wired_speaker_sku": "ACCET1WRDALRTBN",
+    "native_cam_sku": "ACCDC1DR20",
+    "shipment_tracking_id": "NAZ110003"
   },
-  "notes": [
-    "Classified as \"updateLoad\", not \"shipmentUpdate\". The supplied DL list names one mailbox \"Initial Load & Update Load DL\" and a separate one \"Shipment Update DL\", so an update load is its own operation sharing the initial-load address. This sheet is literally named \"Octo Update Load\". Worth confirming, because the mailbox is the only thing that tells the parser which operation a file is.",
-    "Octo bundles its accessories inline: four extra columns carry the wired speaker and native camera SKU and serial. There is no separate accessory file for this family.",
-    "The header contains \"Wired_Speaker _SKU(required)\" with a space before _SKU. That is in the real sheet and is reproduced byte for byte.",
-    "wifi_mac and bt_mac are a fixed prefix plus a decimal counter, not hex MAC arithmetic. In this sheet both start at 21, where the Octo initial-load sheet starts them at 7 and 4.",
-    "The source sheet's Wired_Speaker_Serial_No and Native_Cam_Serial_No are out of order (…202, …201, …203) — hand-edited, not a sequence. Generation emits them in order, so those two columns are excluded from the round-trip comparison."
-  ],
   "columns": [
     {
       "name": "device_id(required)",
@@ -111,7 +95,7 @@
     },
     {
       "name": "wifi_mac",
-      "source": "generated.wifi_mac"
+      "source": "empty"
     },
     {
       "name": "hw_version",
@@ -140,7 +124,7 @@
     },
     {
       "name": "shipment_tracking_id(required)",
-      "source": "trackingId",
+      "source": "field.shipment_tracking_id",
       "required": true
     },
     {
@@ -153,7 +137,7 @@
     },
     {
       "name": "bt_mac",
-      "source": "generated.bt_mac"
+      "source": "empty"
     },
     {
       "name": "service_provider(required)",
@@ -214,5 +198,10 @@
       "source": "generated.native_cam_serial",
       "required": true
     }
+  ],
+  "notes": [
+    "Octo bundles its accessories inline: four extra columns carry the wired speaker and native camera SKU and serial. There is no separate accessory file for this family.",
+    "The header contains \"Wired_Speaker _SKU(required)\" with a space before _SKU. That is in the real sheet and is reproduced byte for byte.",
+    "wifi_mac and bt_mac are empty in this version of the template."
   ]
 }

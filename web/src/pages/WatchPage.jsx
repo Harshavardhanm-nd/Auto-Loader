@@ -117,12 +117,12 @@ export default function WatchPage({
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
 
-  // Rows eligible for shipment update: IDMS -2 + fully synced.
+  // Rows eligible for shipment update: IDMS -2 + fully synced (after initial load or data update).
   const shipmentEligibleRows = (snapshot?.rows ?? []).filter(
     (r) =>
-      stage === 'initialLoad' &&
+      (stage === 'initialLoad' || stage === 'dataUpdate') &&
       Number(r.idmsStatus) === -2 &&
-      r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS'
+      (r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS' || r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS')
   );
 
   // Rows eligible for received at 3PL: IDMS -1 + shipment update synced.
@@ -161,12 +161,30 @@ export default function WatchPage({
     }
   };
 
-  const sendToShipmentUpdate = async () => {
-    setBusy('shipmentGen');
+  const getNextOperation = () => {
+    // For Octo: initialLoad → dataUpdate → shipmentUpdate
+    // For others: initialLoad → shipmentUpdate
+    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+
+    if (stage === 'initialLoad') {
+      return isOctoRun ? 'dataUpdate' : 'shipmentUpdate';
+    }
+    if (stage === 'dataUpdate') {
+      return 'shipmentUpdate';
+    }
+    return 'shipmentUpdate'; // default
+  };
+
+  const sendToNextOperation = async () => {
+    const operation = getNextOperation();
+    const busyKey = `${operation}Gen`;
+    const operationLabel = operation === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
+
+    setBusy(busyKey);
     try {
-      await api.generate(runId, 'shipmentUpdate', [...selected]);
+      await api.generate(runId, operation, [...selected]);
       await refreshRun();
-      setReviewOperation('shipmentUpdate');
+      setReviewOperation(operation);
       goto('review');
     } catch (err) {
       onError(err);
@@ -174,6 +192,8 @@ export default function WatchPage({
       setBusy(null);
     }
   };
+
+  const sendToShipmentUpdate = sendToNextOperation;
 
   const sendToReceived = async () => {
     setBusy('receivedGen');
@@ -477,43 +497,74 @@ export default function WatchPage({
                       (stage === 'initialLoad' &&
                         Number(row.idmsStatus) === -2 &&
                         row.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS') ||
+                      (stage === 'dataUpdate' &&
+                        Number(row.idmsStatus) === -2 &&
+                        row.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS') ||
                       (stage === 'shipmentUpdate' &&
                         Number(row.idmsStatus) === -1 &&
                         row.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS') ||
                       (stage === 'rmaReturned' && Number(row.idmsStatus) === 7);
                     return (
-                      <tr key={row.deviceId}>
-                        {eligibleRows.length > 0 ? (
+                      <React.Fragment key={row.deviceId}>
+                        <tr>
+                          {eligibleRows.length > 0 ? (
+                            <td>
+                              {eligible ? (
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(row.deviceId)}
+                                  onChange={() => toggleSelect(row.deviceId)}
+                                />
+                              ) : null}
+                            </td>
+                          ) : null}
+                          <td className="mono">{row.deviceId}</td>
                           <td>
-                            {eligible ? (
-                              <input
-                                type="checkbox"
-                                checked={selected.has(row.deviceId)}
-                                onChange={() => toggleSelect(row.deviceId)}
-                              />
-                            ) : null}
+                            {row.present ? (
+                              <SyncStatusBadge status={row.syncStatus} />
+                            ) : (
+                              <Badge tone="muted">no asset yet</Badge>
+                            )}
                           </td>
+                          <td className="small">
+                            <IdmsStatusLabel stage={row.stage} />
+                          </td>
+                          <td className="mono small">{row.idmsStatus ?? '—'}</td>
+                          <td className="small">{row.assetStatus ?? '—'}</td>
+                          <td className="mono small">
+                            {row.cpqOrderNumber ?? <span className="faint">unattached</span>}
+                          </td>
+                          <td className="small muted">
+                            {row.lastModifiedDate ? new Date(row.lastModifiedDate).toLocaleTimeString() : '—'}
+                          </td>
+                        </tr>
+                        {row.accessories && row.accessories.length > 0 ? (
+                          row.accessories.map((acc, idx) => (
+                            <tr key={`${row.deviceId}-acc-${idx}`} style={{ backgroundColor: 'rgba(74, 139, 223, 0.05)' }}>
+                              {eligibleRows.length > 0 ? <td /> : null}
+                              <td className="mono small" style={{ paddingLeft: '2.5rem' }}>
+                                {acc.serialId}
+                              </td>
+                              <td>
+                                {acc.present ? (
+                                  <SyncStatusBadge status={acc.syncStatus} />
+                                ) : (
+                                  <Badge tone="muted">no asset yet</Badge>
+                                )}
+                              </td>
+                              <td className="small">
+                                <span style={{ fontSize: '0.85rem', fontStyle: 'italic', color: 'var(--accent)' }}>
+                                  {acc.type}
+                                </span>
+                              </td>
+                              <td className="mono small">{acc.stage?.code ?? '—'}</td>
+                              <td className="small">{acc.assetStatus ?? '—'}</td>
+                              <td className="small faint">—</td>
+                              <td className="small muted">—</td>
+                            </tr>
+                          ))
                         ) : null}
-                        <td className="mono">{row.deviceId}</td>
-                        <td>
-                          {row.present ? (
-                            <SyncStatusBadge status={row.syncStatus} />
-                          ) : (
-                            <Badge tone="muted">no asset yet</Badge>
-                          )}
-                        </td>
-                        <td className="small">
-                          <IdmsStatusLabel stage={row.stage} />
-                        </td>
-                        <td className="mono small">{row.idmsStatus ?? '—'}</td>
-                        <td className="small">{row.assetStatus ?? '—'}</td>
-                        <td className="mono small">
-                          {row.cpqOrderNumber ?? <span className="faint">unattached</span>}
-                        </td>
-                        <td className="small muted">
-                          {row.lastModifiedDate ? new Date(row.lastModifiedDate).toLocaleTimeString() : '—'}
-                        </td>
-                      </tr>
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -541,22 +592,43 @@ export default function WatchPage({
                   >
                     {busy === 'deviceDeadGen' ? 'Generating…' : 'Move Assets to Dead'}
                   </button>
-                ) : receivedEligibleRows.length > 0 ? (
-                  <button
-                    className="btn small"
-                    disabled={busy === 'receivedGen'}
-                    onClick={sendToReceived}
-                  >
-                    {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
-                  </button>
+                ) : (() => {
+                  const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+                  return receivedEligibleRows.length > 0 && !isOctoRun ? (
+                    <button
+                      className="btn small"
+                      disabled={busy === 'receivedGen'}
+                      onClick={sendToReceived}
+                    >
+                      {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
+                    </button>
+                  ) : null;
+                })() ? (
+                  (console.log('received shown'), (
+                    <button
+                      className="btn small"
+                      disabled={busy === 'receivedGen'}
+                      onClick={sendToReceived}
+                    >
+                      {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
+                    </button>
+                  ))
                 ) : (
-                  <button
-                    className="btn small"
-                    disabled={busy === 'shipmentGen'}
-                    onClick={sendToShipmentUpdate}
-                  >
-                    {busy === 'shipmentGen' ? 'Generating…' : 'Generate Shipment Update CSV & Go to Review'}
-                  </button>
+                  (() => {
+                    const nextOp = getNextOperation();
+                    const busyKey = `${nextOp}Gen`;
+                    const isBusy = busy === busyKey;
+                    const opLabel = nextOp === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
+                    return (
+                      <button
+                        className="btn small"
+                        disabled={isBusy}
+                        onClick={sendToNextOperation}
+                      >
+                        {isBusy ? 'Generating…' : `Generate ${opLabel} CSV & Go to Review`}
+                      </button>
+                    );
+                  })()
                 )}
               </div>
             </Sheet>
@@ -574,7 +646,7 @@ export default function WatchPage({
         </Sheet>
       )}
 
-      {position?.stages?.rows ? <NextStep position={position} goto={goto} /> : null}
+      {position?.stages?.rows ? <NextStep position={position} goto={goto} setReviewOperation={setReviewOperation} /> : null}
 
       {run.result ? <ResultCard run={run} runId={runId} /> : null}
     </>
@@ -782,7 +854,7 @@ function StageCell({ stage, idmsStatus }) {
  * Installer App, the customer, or the order integration. Saying so is the point: it is the
  * difference between the app looking stuck and the app being finished with its part.
  */
-function NextStep({ position, goto }) {
+function NextStep({ position, goto, setReviewOperation }) {
   const { position: pos, stages } = position;
   const next = position.next ?? { mine: [], theirs: [] };
 
@@ -841,7 +913,10 @@ function NextStep({ position, goto }) {
               </div>
               <button
                 className={`btn ${step.sendable && !step.alreadySent ? '' : 'secondary'} small`}
-                onClick={() => goto('review')}
+                onClick={() => {
+                  setReviewOperation(step.operation);
+                  goto('review');
+                }}
               >
                 {step.alreadySent ? 'Already sent — review' : 'Go to Review & send'}
               </button>

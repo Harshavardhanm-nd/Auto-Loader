@@ -1,10 +1,10 @@
 {
-  "id": "octo-initial-load",
-  "label": "Octo / D-810 — Initial Load",
+  "id": "octo-shipment-update",
+  "label": "Octo / D-810 — Shipment Update",
   "family": "octo",
   "familyLabel": "Octo (D-810)",
   "kind": "device",
-  "operation": "initialLoad",
+  "operation": "shipmentUpdate",
   "status": "verified",
   "sourceTemplate": "Octo Shipment update.csv",
   "bytes": {
@@ -12,7 +12,7 @@
     "lineEnding": "\r\n",
     "trailingNewline": true
   },
-  "filenamePattern": "Initial_Load_Octo_{trackingId}.csv",
+  "filenamePattern": "Shipment_Update_Octo_{trackingId}.csv",
   "series": {
     "device_id": {
       "type": "numeric",
