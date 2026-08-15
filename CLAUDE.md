@@ -256,19 +256,32 @@ operation on the same devices — a shipment update that invented fresh ids woul
 `POST /:id/generate` accepts an optional `deviceIds` array, and every row planner honours it —
 generated rows are filtered on their primary series, existing-device rows on the id itself. The
 Watch page is what produces those subsets: it polls a stage, then offers the *next* operation over
-exactly the rows that settled. The eligibility filters live in `WatchPage.jsx:120-146`:
+exactly the rows that settled. The eligibility filters live in `WatchPage.jsx:212-290`:
 
 ```
-initialLoad OR dataUpdate polled → IDMS -2 + INITIAL_DEVICE_LOAD_SYNC_SUCCESS
-                                          or DATA_UPDATE_SYNC_SUCCESS  → offer shipmentUpdate
-shipmentUpdate polled            → IDMS -1 + SHIPMENT_UPDATE_SYNC_SUCCESS → offer received at 3PL
-rmaReturned polled               → IDMS 7                                 → offer Mark Dead
+initialLoad polled    → IDMS -2 + INITIAL_DEVICE_LOAD_SYNC_SUCCESS or DATA_UPDATE_SYNC_SUCCESS,
+                         every accessory synced → offer shipmentUpdate, or the family's owed
+                                                   step first (Octo → dataUpdate)
+dataUpdate polled      → IDMS -2 + DATA_UPDATE_SYNC_SUCCESS (if owed) or either status (if not),
+                         every accessory synced → offer shipmentUpdate
+shipmentUpdate polled  → IDMS -1 + SHIPMENT_UPDATE_SYNC_SUCCESS               → offer received at 3PL
+rmaReturned polled     → IDMS 7                                               → offer Mark Dead
 ```
 
-Note the first line: since `73fe338` a device may reach shipment-update eligibility from *either*
-initial load or data update, which is the point of the Octo detour — Octo needs the data correction
-before shipping, other families skip it. `eligibleRows` picks the first non-empty of the three
-lists, so only one hand-off is ever offered at a time.
+Note the first two lines: since `73fe338` a device may reach shipment-update eligibility from
+*either* initial load or data update — the point of the Octo detour, since Octo needs the data
+correction before shipping and other families skip it. Requiring the device to specifically carry
+`DATA_UPDATE_SYNC_SUCCESS`, rather than either status, is scoped to `stage === 'dataUpdate'` alone
+(`WatchPage.jsx:265`). Applying it on the initial-load tab too — which is what the plan first
+specified — leaves an Octo run with zero eligible rows there: those devices carry
+`INITIAL_DEVICE_LOAD_SYNC_SUCCESS`, not the data-update status, and `eligibleRows` gates the
+selection checkboxes, so no eligible rows means no way to select anything and no hand-off at all.
+The initial-load tab reroutes instead: `getNextOperation` sends an Octo selection to `dataUpdate`,
+not `shipmentUpdate`, because the family owes that step first — see the life cycle section below.
+A device that has actually reached `DATA_UPDATE_SYNC_SUCCESS` never forces the question on the
+initial-load tab anyway — it is already `aheadOfStage` relative to `initialLoad` and split out of
+that tab's snapshot before `eligibleRows` runs. `eligibleRows` picks the first non-empty of the
+three lists, so only one hand-off is ever offered at a time.
 
 This is why a partially-failed load is not a dead end: the ~⅓ that fail stay behind while the rest
 move on, on the same ids. Generating for a subset must never re-allocate — it filters rows that
@@ -474,15 +487,15 @@ new-model case, and both fallbacks.
 
 ### The device life cycle lives in `config/lifecycle.json`
 
-The DLCM stage graph: 14 stages and 27 transitions, keyed on `IDMS_Status__c` — a numeric code
+The DLCM stage graph: 14 stages and 26 transitions, keyed on `IDMS_Status__c` — a numeric code
 `-2..14` on the Asset. The chart draws `-2..12`; 13 and 14 exist in the org and are deliberately
 **not** modelled, so an unknown code is reported as unmapped rather than guessed at.
 
-The split that matters is *who drives each arrow*. Nine transitions are an operation this app
-sends (`initialLoad`, `dataUpdate`, `shipmentUpdate`, `received`, `rmaReturned`, `undoDead`, and
-`deviceDead` from each of stages 12, 7 and 8); the other eighteen belong to the Installer App, the
-customer, the network activating a sim, the order integration. The chain the operator actually walks
-is three of them, on the same devices and the same ids:
+The split that matters is *who drives each arrow*. Eight transitions are an operation this app
+sends (`initialLoad`, `shipmentUpdate`, `received`, `rmaReturned`, `undoDead`, and `deviceDead` from
+each of stages 12, 7 and 8); the other eighteen belong to the Installer App, the customer, the
+network activating a sim, the order integration. The chain the operator actually walks is three of
+them, on the same devices and the same ids:
 
 ```
 (no Asset) --initialLoad--> -2 Pre-Production --shipmentUpdate--> -1 Shipped From Vendor
@@ -515,34 +528,59 @@ a status this app does not model) is treated as not-ahead — it can under-repor
 invent one. Rows from snapshots predating the distinction carry no `aheadOfStage` and keep the old
 reading rather than being re-judged wrongly.
 
-#### Known defect: the `dataUpdate` self-loop truncates the operation chain
+**Stage steps are operations that run at a stage without moving the device.** They live in
+`stageSteps` in `config/lifecycle.json`, deliberately *not* in `transitions`: `operationChain()`
+walks the graph taking the first arrow out of each stage, so a self-loop sends it straight back and
+truncates the chain. That is exactly what a `-2 → -2` `dataUpdate` transition did until 2026-08-15 —
+the chain became `[initialLoad, dataUpdate]`, and the ahead/behind guard was silently off for
+`shipmentUpdate` and `received`. Six `lifecycle.test.js` assertions were reporting it the whole time.
 
-**`operationChain()` currently returns `[initialLoad, dataUpdate]`.** `shipmentUpdate` and
-`received` have fallen off it, which is what the six `lifecycle.test.js` failures are reporting.
+Two orders come out of this, and they are not interchangeable:
 
-Commit `73fe338` added a `dataUpdate` transition to let the operator go from initial load to a data
-correction rather than straight to shipment. It was written as a **self-loop** — `from: -2, to: -2`
-— and inserted into `transitions` *above* the `-2 → -1` shipmentUpdate arrow. `operationChain()`
-walks with `transitions.find((t) => t.from === stage && t.operation)`, which takes the **first match
-in array order**, so from stage `-2` it now finds `dataUpdate`, follows it back to `-2`, and stops
-on its own `seen` guard. The walk never reaches shipmentUpdate, so the chain ends two steps early.
+- `operationChain()` — the movement chain, `[initialLoad, shipmentUpdate, received]`.
+- `pollingOrder()` — the same with stage steps spliced in at their `before`,
+  `[initialLoad, dataUpdate, shipmentUpdate, received]`. **`positionInChain` (`sf-client.js:685`)
+  uses this one**: a device carrying `DATA_UPDATE_SYNC_SUCCESS` is somewhere real, and an order
+  that omits the step reads it as `unknown`, which is then treated as not-done.
 
-The consequence is in `positionInChain` (`sf-client.js:614`): `chain.indexOf(stage)` is `-1` for
-both `shipmentUpdate` and `received`, so it returns `'unknown'` before it even looks at the device.
-For those two stages `behindStage` can therefore never be true, and `aheadOfStage` falls back
-entirely to the numeric `idmsAtOrAhead` comparison added later at `sf-client.js:501`. That fallback
-is currently masking the breakage rather than the chain doing its job — note its own comment says
-it "fixes rmaReturned off-chain case", which is the same problem being patched a second time
-downstream instead of at the graph. The failure mode stays conservative (an unknown position is
-treated as not-ahead, so it under-reports rather than inventing a success), which is why this has
-not shown up as a wrong load — but the documented guard is switched off.
+No family is involved in the order. Position depends on which operation last wrote the sync status,
+and a family with no data-update sheet never produces that status. Family decides only whether a
+step is *required*: `requiredStepsBefore(operation, family)` reads `requiredFor`, and Octo owes a
+data update before shipment update. **The check is per group, not per run** — `groups.every(g =>
+g.family === 'octo')` read a mixed run as non-Octo and skipped the block for its Octo devices.
 
-Two constraints on any fix. The graph invariant `no stage transitions to itself` is asserted by the
-tests and a stage-preserving operation genuinely does not move a device, so a self-loop is probably
-the wrong shape for `dataUpdate` in `transitions` at all — it belongs in the stage-check/next-step
-data rather than the movement graph. And whatever the shape, **`operationChain()` must not depend on
-array order**: an operation that returns to its own stage has to be skipped by the walk, not allowed
-to terminate it.
+Only `haptic` and `octo` have a data-update sheet, so it is required for Octo, optional for Haptic,
+and impossible for the rest.
+
+**That per-group fix does not reach every Octo check, and the gap is a limit, not a feature.**
+Whether to withhold "Received at 3PL" once a shipment update lands is a separate decision, in
+`WatchPage.jsx`'s `handoff`, and it still reads `runFamilies.includes('octo')` — the run's families,
+not each device's own. A run holding both Octo and non-Octo groups therefore withholds that
+hand-off from every device in it, where only the Octo ones should actually carry on past shipment
+update. Scoping it per device needs a browser-side device-id → family map, which this change does
+not build. Withholding is the safer half of that gap: a send not offered is a click away, a send
+offered wrongly is an email that has already gone.
+
+**An Octo device is held back until its related assets are synced** — every entry in
+`row.accessories` present and at a `_SYNC_SUCCESS`. Per device, not per run: the batch's successes
+still move on, which is the same rule a partially-failed load has always followed. A device with no
+accessories recorded has nothing to wait on; absence of a record is not evidence of an unsynced part.
+
+That accessory data is fetched after the stage split has already run, and has to be threaded through
+it by hand. `GET /:runId/poll/:stage` (`runs.js:1046`) calls `scopeSnapshot()` first, which runs
+`splitByStagePosition` and builds `snapshot.atStage` from the row objects as they stand at that
+instant. The Octo block that follows maps over `snapshot.rows` to attach `accessories`
+(`runs.js:1066-1101`), and a `.map()` builds new objects — `atStage.rows` was already set from the
+old ones and kept pointing at them. The Watch page reads
+`{ ...fullSnapshot, ...fullSnapshot.atStage }`, so `rows` is the un-enriched array: a run measured
+before the fix showed `atStage` at 4 rows, with accessories attached to 0 of them. Because
+`accessoriesComplete`'s `.every()` over an empty list is `true`, the completeness gate silently
+passed every device whenever any device on the run was ahead of or behind the watched stage — the
+ordinary case, not an edge one. The fix (`runs.js:1108-1117`) re-maps `atStage.rows` through the
+same enrichment once it exists. `movedOn` and `notYet` never needed this: `splitByStagePosition`
+already reduces them to `{deviceId, syncStatus, stage}`, nothing left on them to enrich. The lesson
+generalises past Octo: anything that enriches rows after `scopeSnapshot` has to be propagated onto
+`atStage.rows` by hand, or it stays invisible to the UI.
 
 Two things this deliberately does not do:
 
