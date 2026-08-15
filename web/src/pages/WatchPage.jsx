@@ -209,13 +209,41 @@ export default function WatchPage({
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
 
-  // Rows eligible for shipment update: IDMS -2 + fully synced (after initial load or data update).
-  const shipmentEligibleRows = (snapshot?.rows ?? []).filter(
-    (r) =>
-      (stage === 'initialLoad' || stage === 'dataUpdate') &&
-      Number(r.idmsStatus) === -2 &&
-      (r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS' || r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS')
-  );
+  /** Families in this run, deduplicated. A run may hold several. */
+  const runFamilies = [...new Set((run.groups ?? []).map((g) => g.family).filter(Boolean))];
+
+  /**
+   * The stage step some family in this run must finish before `operation`, or null.
+   *
+   * Checked per group rather than per run: the rule this replaces was
+   * `groups.every(g => g.family === 'octo')`, which read a mixed-family run as non-Octo and
+   * skipped the step for its Octo devices.
+   */
+  const stepRequiredBefore = (operation) =>
+    (model?.stageSteps ?? []).find(
+      (s) => s.before === operation && (s.requiredFor ?? []).some((f) => runFamilies.includes(f))
+    ) ?? null;
+
+  // Rows eligible for shipment update: at Pre-Production and fully synced. A family that owes a
+  // stage step first (Octo owes its data update) is only eligible to leave the *data-update* tab
+  // for shipment update once that step's own success status is on the device — an initial-load
+  // success is not enough to skip it. This is scoped to `stage === 'dataUpdate'` rather than
+  // applied everywhere: on the initial-load tab a device that owes the step is never offered
+  // shipment update in the first place (`getNextOperation` below routes it to the owed operation
+  // instead), so requiring DATA_UPDATE_SYNC_SUCCESS there as well only withheld the very first
+  // hand-off Octo needs, without withholding anything real — a device that has actually reached
+  // DATA_UPDATE_SYNC_SUCCESS is aheadOfStage relative to the initial-load tab and is not in this
+  // snapshot at all.
+  const owesBeforeShipment = stepRequiredBefore('shipmentUpdate');
+  const shipmentEligibleRows = (snapshot?.rows ?? []).filter((r) => {
+    if (stage !== 'initialLoad' && stage !== 'dataUpdate') return false;
+    if (Number(r.idmsStatus) !== -2) return false;
+    if (stage === 'dataUpdate' && owesBeforeShipment) return r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS';
+    return (
+      r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS' ||
+      r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS'
+    );
+  });
 
   // Rows eligible for received at 3PL: IDMS -1 + shipment update synced.
   const receivedEligibleRows = (snapshot?.rows ?? []).filter(
@@ -255,17 +283,12 @@ export default function WatchPage({
   };
 
   const getNextOperation = () => {
-    // For Octo: initialLoad → dataUpdate → shipmentUpdate
-    // For others: initialLoad → shipmentUpdate
-    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
-
-    if (stage === 'initialLoad') {
-      return isOctoRun ? 'dataUpdate' : 'shipmentUpdate';
-    }
-    if (stage === 'dataUpdate') {
-      return 'shipmentUpdate';
-    }
-    return 'shipmentUpdate'; // default
+    if (stage === 'dataUpdate') return 'shipmentUpdate';
+    // A family that owes a step before shipment update is sent to that step first. The rule is in
+    // config/lifecycle.json, not here — this reads it.
+    const owed = stepRequiredBefore('shipmentUpdate');
+    if (stage === 'initialLoad' && owed) return owed.operation;
+    return 'shipmentUpdate';
   };
 
   const sendToNextOperation = async () => {
