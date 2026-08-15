@@ -16,6 +16,7 @@ import {
   sendBlockers,
 } from '../lib/config.js';
 import { decodeSku } from '../services/sku-decoder.js';
+import { filterCatalogByFamily, declaredSeries } from '../services/catalog-filter.js';
 import { describeLifecycle } from '../lib/lifecycle.js';
 
 export const catalogRouter = express.Router();
@@ -27,7 +28,10 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 async function getCatalog(env, { refresh = false } = {}) {
   const cached = catalogCache.get(env);
   if (!refresh && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.products;
-  const products = await fetchSerializedCatalog(env);
+  // Widened to reach the series a family rule names but the serialized flag would exclude.
+  const products = await fetchSerializedCatalog(env, {
+    includeSeries: declaredSeries(loadProfiles().catalogFilters),
+  });
   catalogCache.set(env, { at: Date.now(), products });
   return products;
 }
@@ -35,13 +39,27 @@ async function getCatalog(env, { refresh = false } = {}) {
 catalogRouter.get('/products', async (req, res, next) => {
   try {
     const env = req.query.env || 'testing';
-    const products = await getCatalog(env, { refresh: req.query.refresh === 'true' });
+    const all = await getCatalog(env, { refresh: req.query.refresh === 'true' });
+
+    // Narrow to the picker's selected family before anything else, so `q` and `kind` search
+    // inside that family rather than across the whole org. `filterApplied` is false whenever the
+    // narrowing could not be trusted — no rule for the family, or a rule that matched nothing —
+    // and the rows fall back to everything, which the UI reports rather than hides.
+    const family = req.query.family || null;
+    const scoped = filterCatalogByFamily(all, family, loadProfiles().catalogFilters ?? {});
+    const products = scoped.products;
+
     const filtered = req.query.q
       ? searchCatalog(products, req.query.q, { kind: req.query.kind || null })
       : products.filter((p) => (req.query.kind ? p.kind === req.query.kind : true));
 
     res.json({
       total: products.length,
+      // The size of the catalog before the family narrowing, so the UI can offer "show all N".
+      catalogTotal: scoped.total,
+      family,
+      filterApplied: scoped.filterApplied,
+      filterReason: scoped.reason,
       counts: {
         device: products.filter((p) => p.kind === 'device').length,
         accessory: products.filter((p) => p.kind === 'accessory').length,

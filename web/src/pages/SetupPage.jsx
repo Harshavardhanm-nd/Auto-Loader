@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Field, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, Field, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * What this run is: which operation, which tracking id, and optionally which order.
@@ -38,18 +38,22 @@ export default function SetupPage({ env, setup, setSetup, goto, onError }) {
   return (
     <>
       <PageHead eyebrow="Step 02 · Run identity" title="Setup">
-        <p>
-          Pick the operation and the tracking id this run is for. The tracking id goes into the
-          CSV and into the filename, so it is required even when no order is involved.
-        </p>
+        <Explainer>
+          <p>
+            Pick the operation and the tracking id this run is for. The tracking id goes into the
+            CSV and into the filename, so it is required even when no order is involved.
+          </p>
+        </Explainer>
       </PageHead>
 
-      <Sheet eyebrow="Decides template and mailbox" title="Operation">
-        <p className="prose small">
-          The destination mailbox is the only thing that tells the parser which operation you
-          mean — the CSV bytes are the same. Choosing here decides which template and which
-          mailbox get used.
-        </p>
+      <Sheet title="Operation">
+        <Explainer>
+          <p className="prose small">
+            The destination mailbox is the only thing that tells the parser which operation you
+            mean — the CSV bytes are the same. Choosing here decides which template and which
+            mailbox get used.
+          </p>
+        </Explainer>
         <Segmented
           label="Operation"
           value={operation}
@@ -58,7 +62,7 @@ export default function SetupPage({ env, setup, setSetup, goto, onError }) {
         />
       </Sheet>
 
-      <Sheet eyebrow="Goes into the CSV and the filename" title="Tracking id">
+      <Sheet title="Tracking id">
         <div style={{ maxWidth: '26rem' }}>
           <Field label="shipment_tracking_id" raw hint="e.g. B3E110005, RTS120011, or NA">
             <div className="input-row">
@@ -81,15 +85,16 @@ export default function SetupPage({ env, setup, setSetup, goto, onError }) {
             </div>
           </Field>
         </div>
-        <p className="prose small" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
-          Some families put <code>NA</code> in this column at initial load and only carry a real
-          value at shipment update — the Haptic and Octo sheets both do. The filename still uses
-          whatever you enter here.
-        </p>
+        <Explainer>
+          <p className="prose small" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+            Some families put <code>NA</code> in this column at initial load and only carry a real
+            value at shipment update — the Haptic and Octo sheets both do. The filename still uses
+            whatever you enter here.
+          </p>
+        </Explainer>
       </Sheet>
 
       <Sheet
-        eyebrow="Only for a wizard upload"
         title={
           <>
             Order <Badge tone="muted">optional</Badge>
@@ -106,10 +111,12 @@ export default function SetupPage({ env, setup, setSetup, goto, onError }) {
           ) : null
         }
       >
-        <p className="prose small">
-          Only needed if this run has to produce a wizard upload matching an order's serialized
-          quantity. Skip it for a plain manufacturer batch.
-        </p>
+        <Explainer>
+          <p className="prose small">
+            Only needed if this run has to produce a wizard upload matching an order's serialized
+            quantity. Skip it for a plain manufacturer batch.
+          </p>
+        </Explainer>
 
         <div className="card-row">
           <div style={{ flex: '0 0 200px' }}>

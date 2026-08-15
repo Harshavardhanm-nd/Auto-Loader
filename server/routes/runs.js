@@ -1048,8 +1048,13 @@ runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
     const run = getRun(req.params.runId);
     let snapshot = scopeSnapshot(run, req.params.stage, run.polling?.[req.params.stage] ?? null);
 
-    // For Octo runs, fetch and add accessory status to snapshot rows
-    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+    // For Octo runs, fetch and add accessory status to snapshot rows.
+    // `.some`, not `.every`: `.every` read a mixed run (Octo plus another family) as non-Octo and
+    // silently skipped this whole block, so no row ever got `.accessories` and the Task 6 holdback
+    // was defeated for every device in that run, Octo included. The enrichment below already
+    // narrows to devices with a recorded accessory (`if (!run.accessories[row.deviceId]) return
+    // row;`), so `.some` here is safe — a mixed run's non-Octo devices pass through untouched.
+    const isOctoRun = run.groups.some((g) => g.family === 'octo');
     if (isOctoRun && run.accessories && snapshot?.rows?.length) {
       try {
         const accessorySerials = [];
@@ -1099,6 +1104,22 @@ runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
               };
             }),
           };
+
+          // The atStage split ran before this enrichment, so `snapshot.atStage.rows` still holds the
+          // pre-enrichment row objects — and that is the array the Watch page actually reads, since
+          // it spreads `{ ...fullSnapshot, ...fullSnapshot.atStage }` and `rows` is overwritten.
+          // Without this, every accessory disappears the moment any device is ahead of or behind the
+          // stage, and the completeness gate silently passes everything.
+          if (snapshot.atStage?.rows?.length) {
+            const enrichedById = new Map(snapshot.rows.map((r) => [String(r.deviceId), r]));
+            snapshot = {
+              ...snapshot,
+              atStage: {
+                ...snapshot.atStage,
+                rows: snapshot.atStage.rows.map((r) => enrichedById.get(String(r.deviceId)) ?? r),
+              },
+            };
+          }
         }
       } catch (err) {
         // If accessory fetch fails, still return the snapshot without accessories
@@ -1169,7 +1190,7 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
       if (deviceIds.length) assets = await fetchAssetsByDeviceId(run.env, deviceIds);
 
       // For Octo runs, also fetch accessory status
-      const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+      const isOctoRun = run.groups.some((g) => g.family === 'octo');
       if (isOctoRun && run.accessories) {
         const accessorySerials = [];
         for (const acc of Object.values(run.accessories)) {
@@ -1240,7 +1261,7 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     let next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
 
     // For Octo family, enforce mandatory dataUpdate before shipmentUpdate
-    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+    const isOctoRun = run.groups.some((g) => g.family === 'octo');
     const dataUpdateSent = Object.entries(run.sends ?? {}).some(
       ([, s]) => s?.ok && s.operation === 'dataUpdate'
     );

@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spinner } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spinner } from '../components/ui.jsx';
 
 /**
  * Polling view.
@@ -16,6 +16,15 @@ import { Badge, Callout, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spin
  * A settled stage is not the end. The same devices carry on through the chart, so the panel at
  * the bottom answers the question that actually follows: what moves them next, and is it mine.
  */
+
+/**
+ * How current a snapshot has to be for selecting a tab to accept it as-is.
+ *
+ * Short enough that a tab is effectively always live, long enough that moving between tabs to
+ * compare them costs one query rather than one per click. The "Refresh now" / "Refresh from org"
+ * buttons ignore it — pressing those means "I do not care how recent it is, ask again".
+ */
+const REFRESH_IF_OLDER_THAN_MS = 15_000;
 export default function WatchPage({
   runId,
   run,
@@ -37,6 +46,9 @@ export default function WatchPage({
   // Asset-status view tabs — read-only filtered views of the initial-load device pool.
   const [viewPoll, setViewPoll] = React.useState(null);
   const [viewBusy, setViewBusy] = React.useState(false);
+  // Why the automatic top-up did not land, shown inline beside the snapshot's age. Never a banner —
+  // see the activation effect below.
+  const [refreshError, setRefreshError] = React.useState(null);
   const isViewTab = ASSET_VIEW_TAB_IDS.has(stage);
 
   React.useEffect(() => {
@@ -48,6 +60,14 @@ export default function WatchPage({
     setActiveOperation(stage);
   }, [stage, setActiveOperation]);
 
+  // The stage whose rows this tab shows. Every asset view is a filter over the initial-load pool,
+  // so they all read that stage's snapshot rather than one of their own.
+  const pollStage = isViewTab ? 'initialLoad' : stage;
+  // A boolean rather than the run itself, so the activation effect below does not re-run —
+  // and re-query Salesforce — every time the run object is refreshed.
+  const hasAllocatedIds = Boolean(run?.idGeneration?.allocatedAt);
+
+  /** Re-read the stored snapshot. Cheap — this is disk, not Salesforce. */
   const load = React.useCallback(async () => {
     try {
       setPoll(await api.poll(runId, stage));
@@ -56,35 +76,107 @@ export default function WatchPage({
     }
   }, [runId, stage, onError]);
 
+  /**
+   * Ask Salesforce for this tab's stage, then reload the snapshot that writes.
+   *
+   * This is the one that costs a query, and the only thing that makes a tab current — `load`
+   * re-reads whatever was last written to disk, however old that is.
+   */
+  const refreshFromOrg = React.useCallback(async () => {
+    setViewBusy(true);
+    setRefreshError(null);
+    try {
+      await api.pollOnce(runId, pollStage);
+      const fresh = await api.poll(runId, pollStage);
+      if (isViewTab) setViewPoll(fresh);
+      else setPoll(fresh);
+      await refreshRun().catch(() => {});
+    } catch (err) {
+      onError(err);
+    } finally {
+      setViewBusy(false);
+    }
+  }, [runId, pollStage, isViewTab, onError, refreshRun]);
+
+  /**
+   * Selecting a tab shows its stored snapshot straight away, then quietly brings it up to date.
+   *
+   * Both halves matter. Drawing the snapshot first keeps tab switching instant — waiting on
+   * Salesforce before rendering anything would trade a stale tab for a slow one. Following it with
+   * a live read is what removes the second click: before this, every tab opened on whatever the
+   * last poll happened to write, and "Refresh from org" was not optional so much as mandatory.
+   *
+   * Three things suppress the live read, each for its own reason:
+   *
+   *   - a server-side poll loop is already running for this stage, and is querying every few
+   *     seconds anyway — a second request races it for no new information;
+   *   - the snapshot is newer than REFRESH_IF_OLDER_THAN_MS, so flipping between tabs costs one
+   *     query rather than one per click;
+   *   - the effect has been torn down because you moved on, in which case a late response must not
+   *     land: it belongs to a tab you are no longer looking at, and would overwrite the rows of
+   *     the one you are.
+   *
+   * A failure here is deliberately not routed to `onError`. The page's error banner is right for a
+   * button you pressed and wrong for a refresh you did not ask for — an expired session would
+   * otherwise raise one on every tab click. It degrades to the snapshot plus the stamp saying how
+   * old it is, which is the honest reading.
+   */
   React.useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+    const setSnapshot = isViewTab ? setViewPoll : setPoll;
 
-  const loadViewData = React.useCallback(async () => {
-    if (!ASSET_VIEW_TAB_IDS.has(stage)) return;
-    setViewBusy(true);
-    try {
-      setViewPoll(await api.poll(runId, 'initialLoad'));
-    } catch (err) {
-      onError(err);
-    } finally {
-      setViewBusy(false);
-    }
-  }, [runId, stage, onError]);
+    (async () => {
+      let current;
+      try {
+        current = await api.poll(runId, pollStage);
+      } catch (err) {
+        if (!cancelled) onError(err);
+        return;
+      }
+      if (cancelled) return;
+      setSnapshot(current);
+      setRefreshError(null);
 
-  React.useEffect(() => { loadViewData(); }, [loadViewData]);
+      if (current?.running) return;
+      // Nothing to ask the org about until ids exist. The server refuses this with a 400 ("this
+      // run has no allocated ids yet"), so without the guard a draft run fires a request that
+      // cannot succeed every time a tab is opened.
+      if (!hasAllocatedIds) return;
+      const polledAt = current?.snapshot?.lastPolledAt;
+      if (polledAt && Date.now() - new Date(polledAt).getTime() < REFRESH_IF_OLDER_THAN_MS) return;
 
-  const refreshViewData = async () => {
-    setViewBusy(true);
-    try {
-      await api.pollOnce(runId, 'initialLoad');
-      setViewPoll(await api.poll(runId, 'initialLoad'));
-    } catch (err) {
-      onError(err);
-    } finally {
-      setViewBusy(false);
-    }
-  };
+      setViewBusy(true);
+      try {
+        await api.pollOnce(runId, pollStage);
+        const fresh = await api.poll(runId, pollStage);
+        if (!cancelled) setSnapshot(fresh);
+      } catch (err) {
+        if (!cancelled) setRefreshError(err?.message ?? String(err));
+      } finally {
+        if (!cancelled) setViewBusy(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, pollStage, isViewTab, hasAllocatedIds, onError]);
+
+  /**
+   * Where an operation leaves the devices, read off the chart rather than written out here.
+   *
+   * `deviceDead` has three arrows in the graph and they all land on the same stage, so taking the
+   * first is safe. An operation the model does not know returns null and the hand-off simply omits
+   * the arrow rather than guessing at a destination.
+   */
+  const nextStageLabel = React.useCallback(
+    (operation) => {
+      const move = (model?.transitions ?? []).find((t) => t.operation === operation);
+      if (!move) return null;
+      return (model?.stages ?? []).find((s) => s.code === move.to)?.label ?? null;
+    },
+    [model]
+  );
 
   const loadPosition = React.useCallback(() => {
     api
@@ -117,13 +209,65 @@ export default function WatchPage({
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
 
-  // Rows eligible for shipment update: IDMS -2 + fully synced (after initial load or data update).
-  const shipmentEligibleRows = (snapshot?.rows ?? []).filter(
-    (r) =>
-      (stage === 'initialLoad' || stage === 'dataUpdate') &&
-      Number(r.idmsStatus) === -2 &&
-      (r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS' || r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS')
+  /** Families in this run, deduplicated. A run may hold several. */
+  const runFamilies = [...new Set((run.groups ?? []).map((g) => g.family).filter(Boolean))];
+
+  /**
+   * The stage step some family in this run must finish before `operation`, or null.
+   *
+   * Checked per group rather than per run: the rule this replaces was
+   * `groups.every(g => g.family === 'octo')`, which read a mixed-family run as non-Octo and
+   * skipped the step for its Octo devices.
+   */
+  const stepRequiredBefore = (operation) =>
+    (model?.stageSteps ?? []).find(
+      (s) => s.before === operation && (s.requiredFor ?? []).some((f) => runFamilies.includes(f))
+    ) ?? null;
+
+  /**
+   * Is a related asset synced?
+   *
+   * `present` false means the accessory has no Asset in the org yet, and a null sync status means
+   * the integration has written nothing — both are reasons to wait, not to proceed.
+   */
+  const accessorySynced = (a) => Boolean(a?.present) && /_SYNC_SUCCESS$/.test(a?.syncStatus ?? '');
+
+  /**
+   * A device is complete when it and every accessory recorded against it are synced.
+   *
+   * Per device, not per run: the four devices whose speakers landed move on while the one that
+   * failed is held back. A device with no accessories recorded has nothing to wait on — absence of
+   * a record is not evidence of an unsynced part. A snapshot taken before accessories were captured
+   * carries none, and must keep its old reading rather than being judged incomplete.
+   */
+  const accessoriesComplete = (r) => (r.accessories ?? []).every(accessorySynced);
+
+  /** Devices held back only by an accessory, so the notice can name what is missing. */
+  const heldByAccessory = (snapshot?.rows ?? []).filter(
+    (r) => (r.accessories ?? []).length > 0 && !accessoriesComplete(r)
   );
+
+  // Rows eligible for shipment update: at Pre-Production and fully synced. A family that owes a
+  // stage step first (Octo owes its data update) is only eligible to leave the *data-update* tab
+  // for shipment update once that step's own success status is on the device — an initial-load
+  // success is not enough to skip it. This is scoped to `stage === 'dataUpdate'` rather than
+  // applied everywhere: on the initial-load tab a device that owes the step is never offered
+  // shipment update in the first place (`getNextOperation` below routes it to the owed operation
+  // instead), so requiring DATA_UPDATE_SYNC_SUCCESS there as well only withheld the very first
+  // hand-off Octo needs, without withholding anything real — a device that has actually reached
+  // DATA_UPDATE_SYNC_SUCCESS is aheadOfStage relative to the initial-load tab and is not in this
+  // snapshot at all.
+  const owesBeforeShipment = stepRequiredBefore('shipmentUpdate');
+  const shipmentEligibleRows = (snapshot?.rows ?? []).filter((r) => {
+    if (stage !== 'initialLoad' && stage !== 'dataUpdate') return false;
+    if (Number(r.idmsStatus) !== -2) return false;
+    if (!accessoriesComplete(r)) return false;
+    if (stage === 'dataUpdate' && owesBeforeShipment) return r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS';
+    return (
+      r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS' ||
+      r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS'
+    );
+  });
 
   // Rows eligible for received at 3PL: IDMS -1 + shipment update synced.
   const receivedEligibleRows = (snapshot?.rows ?? []).filter(
@@ -145,6 +289,7 @@ export default function WatchPage({
       ? receivedEligibleRows
       : deadEligibleRows;
 
+
   const toggleSelect = (deviceId) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -162,17 +307,12 @@ export default function WatchPage({
   };
 
   const getNextOperation = () => {
-    // For Octo: initialLoad → dataUpdate → shipmentUpdate
-    // For others: initialLoad → shipmentUpdate
-    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
-
-    if (stage === 'initialLoad') {
-      return isOctoRun ? 'dataUpdate' : 'shipmentUpdate';
-    }
-    if (stage === 'dataUpdate') {
-      return 'shipmentUpdate';
-    }
-    return 'shipmentUpdate'; // default
+    if (stage === 'dataUpdate') return 'shipmentUpdate';
+    // A family that owes a step before shipment update is sent to that step first. The rule is in
+    // config/lifecycle.json, not here — this reads it.
+    const owed = stepRequiredBefore('shipmentUpdate');
+    if (stage === 'initialLoad' && owed) return owed.operation;
+    return 'shipmentUpdate';
   };
 
   const sendToNextOperation = async () => {
@@ -182,7 +322,14 @@ export default function WatchPage({
 
     setBusy(busyKey);
     try {
-      await api.generate(runId, operation, [...selected]);
+      const result = await api.generate(runId, operation, [...selected]);
+      // `blocked` names families the operation could not be written for — a mixed run whose
+      // non-Octo groups have no data-update sheet, say. Navigating without saying so tells the
+      // operator every ticked device was covered when some were skipped.
+      if (result?.blocked?.length) {
+        const families = result.blocked.map((b) => b.familyLabel ?? b.family).join(', ');
+        onError(new Error(`Nothing was written for ${families}. ${result.blocked[0].message}`));
+      }
       await refreshRun();
       setReviewOperation(operation);
       goto('review');
@@ -237,6 +384,60 @@ export default function WatchPage({
     }
   };
 
+  /**
+   * The hand-off this stage offers for the ticked devices: which operation, what to call it, and
+   * what pressing it does.
+   *
+   * Computed here rather than inside the JSX so the "your next step" panel below can tell which
+   * operation is already being offered above it and not announce the same one twice. It was
+   * previously a three-way ternary whose middle branch built a button element purely to test
+   * whether it was truthy, then rendered a second identical one, with a stray console.log between
+   * them — same order of precedence, now stated once.
+   */
+  const handoff = (() => {
+    // Read from the run's families rather than `groups.every(...)`, which called a mixed run
+    // non-Octo and offered Received at 3PL to its Octo devices — the same per-run mistake
+    // `stepRequiredBefore` above exists to correct.
+    //
+    // Still not per *device*: a run holding both Octo and Driveri groups withholds Received at 3PL
+    // from all of them, where only the Octo ones should carry on past it. Scoping eligibility by
+    // each device's own family needs the browser to map device id -> family, which this change does
+    // not do. Erring toward withholding is the safe half of that: a send not offered is a click
+    // away, a send offered wrongly is an email.
+    const isOctoRun = runFamilies.includes('octo');
+    if (deadEligibleRows.length > 0) {
+      return {
+        operation: 'deviceDead',
+        operationLabel: 'Mark Dead',
+        description: 'Non-repairable at the repair partner — same devices, same ids.',
+        actionLabel: 'Move to Dead',
+        busyKey: 'deviceDeadGen',
+        onClick: sendToDeviceDead,
+      };
+    }
+    // Octo carries on through the chain rather than stopping at 3PL.
+    if (receivedEligibleRows.length > 0 && !isOctoRun) {
+      return {
+        operation: 'received',
+        operationLabel: 'Received at 3PL',
+        description: 'Same devices, same ids, one more email.',
+        actionLabel: 'Send to Received at 3PL',
+        busyKey: 'receivedGen',
+        onClick: sendToReceived,
+      };
+    }
+    const nextOp = getNextOperation();
+    const nextOpLabel = nextOp === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
+    return {
+      operation: nextOp,
+      operationLabel: nextOpLabel,
+      description: 'Same devices, same ids, one more email.',
+      actionLabel: `Generate ${nextOpLabel} CSV`,
+      busyKey: `${nextOp}Gen`,
+      onClick: sendToNextOperation,
+    };
+  })();
+
   // Toggle a single device in the rmaInitiated view tab selection.
   const toggleRmaSelect = (deviceId) => {
     setSelected((prev) => {
@@ -271,11 +472,13 @@ export default function WatchPage({
   return (
     <>
       <PageHead eyebrow="Step 06 · Convergence" title="Watch">
-        <p>
-          Polling <code>Asset.Sync_Status__c</code> for the {unitCount} unit(s) in this run across{' '}
-          {run.groups.length} famil{run.groups.length === 1 ? 'y' : 'ies'}. Polling continues
-          server-side — closing this page does not stop it.
-        </p>
+        <Explainer>
+          <p>
+            Polling <code>Asset.Sync_Status__c</code> for the {unitCount} unit(s) in this run across{' '}
+            {run.groups.length} famil{run.groups.length === 1 ? 'y' : 'ies'}. Polling continues
+            server-side — closing this page does not stop it.
+          </p>
+        </Explainer>
       </PageHead>
 
       <Sheet
@@ -294,10 +497,10 @@ export default function WatchPage({
               </button>
               <button
                 className="btn secondary small"
-                disabled={busy}
-                onClick={() => act(() => api.pollOnce(runId, stage), 'once')}
+                disabled={busy || viewBusy}
+                onClick={refreshFromOrg}
               >
-                Refresh now
+                {viewBusy ? 'Refreshing…' : 'Refresh now'}
               </button>
               {poll?.running ? (
                 <button
@@ -310,7 +513,7 @@ export default function WatchPage({
               ) : null}
             </>
           ) : (
-            <button className="btn secondary small" disabled={viewBusy} onClick={refreshViewData}>
+            <button className="btn secondary small" disabled={viewBusy} onClick={refreshFromOrg}>
               {viewBusy ? 'Refreshing…' : 'Refresh from org'}
             </button>
           )
@@ -359,6 +562,7 @@ export default function WatchPage({
           stage={stage}
           viewPoll={viewPoll}
           viewBusy={viewBusy}
+          refreshError={refreshError}
           selected={selected}
           onToggle={toggleRmaSelect}
           onToggleAll={toggleRmaSelectAll}
@@ -367,35 +571,29 @@ export default function WatchPage({
 
       {stage === 'rmaInitiated' && selected.size > 0 ? (
         <Sheet>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            <span className="small">
-              <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
-            </span>
-            <button
-              className="btn small"
-              disabled={busy === 'rmaReturnedGen'}
-              onClick={sendToRmaReturned}
-            >
-              {busy === 'rmaReturnedGen' ? 'Generating…' : 'Send Assets to RMA Returned'}
-            </button>
-          </div>
+          <NextStepAction
+            operationLabel="RMA Returned"
+            toLabel={nextStageLabel('rmaReturned')}
+            description="Faulty devices received back at the repair partner — same devices, same ids."
+            count={selected.size}
+            busy={busy === 'rmaReturnedGen'}
+            onClick={sendToRmaReturned}
+            actionLabel="Send to RMA Returned"
+          />
         </Sheet>
       ) : null}
 
       {stage === 'deadView' && selected.size > 0 ? (
         <Sheet>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            <span className="small">
-              <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
-            </span>
-            <button
-              className="btn small"
-              disabled={busy === 'deviceDeadGen'}
-              onClick={sendToDeviceDead}
-            >
-              {busy === 'deviceDeadGen' ? 'Generating…' : 'Move Assets to Dead'}
-            </button>
-          </div>
+          <NextStepAction
+            operationLabel="Mark Dead"
+            toLabel={nextStageLabel('deviceDead')}
+            description="Non-repairable at the repair partner — same devices, same ids."
+            count={selected.size}
+            busy={busy === 'deviceDeadGen'}
+            onClick={sendToDeviceDead}
+            actionLabel="Move to Dead"
+          />
         </Sheet>
       ) : null}
 
@@ -416,10 +614,18 @@ export default function WatchPage({
                 <span className="value" style={{ fontSize: '0.95rem', paddingTop: '0.35rem' }}>
                   <StateBadge state={snapshot.state} running={poll.running} />
                 </span>
-                <span className="label">
-                  {snapshot.lastPolledAt
-                    ? `polled ${new Date(snapshot.lastPolledAt).toLocaleTimeString()}`
-                    : 'not polled yet'}
+                <span className="label" title={refreshError ?? undefined}>
+                  {viewBusy
+                    ? 'checking Salesforce…'
+                    : refreshError
+                      ? `could not reach Salesforce${
+                          snapshot.lastPolledAt
+                            ? ` · showing ${new Date(snapshot.lastPolledAt).toLocaleTimeString()}`
+                            : ''
+                        }`
+                      : snapshot.lastPolledAt
+                        ? `polled ${new Date(snapshot.lastPolledAt).toLocaleTimeString()}`
+                        : 'not polled yet'}
                 </span>
               </div>
             </div>
@@ -570,67 +776,46 @@ export default function WatchPage({
                 </tbody>
               </table>
             </div>
-            <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
-              The sync status says whether the load landed; the stage says where the device now is.
-              They move separately — a device can be at <span className="mono">_SYNC_SUCCESS</span>{' '}
-              and not have changed stage yet. An unattached device is normal at this stage: the{' '}
-              <code>CPQ_Order__c</code> lookup is set by the wizard, not by either email.
-            </p>
+            <Explainer>
+              <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
+                The sync status says whether the load landed; the stage says where the device now is.
+                They move separately — a device can be at <span className="mono">_SYNC_SUCCESS</span>{' '}
+                and not have changed stage yet. An unattached device is normal at this stage: the{' '}
+                <code>CPQ_Order__c</code> lookup is set by the wizard, not by either email.
+              </p>
+            </Explainer>
           </Sheet>
 
-          {selected.size > 0 ? (
+          {heldByAccessory.length ? (
+            <Callout
+              tone="warn"
+              title={`${heldByAccessory.length} device(s) waiting on a related asset`}
+            >
+              <ul style={{ margin: '0.2rem 0 0', paddingLeft: '1.1rem' }}>
+                {heldByAccessory.map((r) => (
+                  <li key={r.deviceId} className="small">
+                    <span className="mono">{r.deviceId}</span> —{' '}
+                    {(r.accessories ?? [])
+                      .filter((a) => !accessorySynced(a))
+                      .map((a) => `${a.type} ${a.serialId}${a.present ? '' : ' (no asset yet)'}`)
+                      .join(', ')}
+                  </li>
+                ))}
+              </ul>
+            </Callout>
+          ) : null}
+
+          {selected.size > 0 && handoff ? (
             <Sheet>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                <span className="small">
-                  <strong>{selected.size}</strong> device{selected.size !== 1 ? 's' : ''} selected
-                </span>
-                {deadEligibleRows.length > 0 ? (
-                  <button
-                    className="btn small"
-                    disabled={busy === 'deviceDeadGen'}
-                    onClick={sendToDeviceDead}
-                  >
-                    {busy === 'deviceDeadGen' ? 'Generating…' : 'Move Assets to Dead'}
-                  </button>
-                ) : (() => {
-                  const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
-                  return receivedEligibleRows.length > 0 && !isOctoRun ? (
-                    <button
-                      className="btn small"
-                      disabled={busy === 'receivedGen'}
-                      onClick={sendToReceived}
-                    >
-                      {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
-                    </button>
-                  ) : null;
-                })() ? (
-                  (console.log('received shown'), (
-                    <button
-                      className="btn small"
-                      disabled={busy === 'receivedGen'}
-                      onClick={sendToReceived}
-                    >
-                      {busy === 'receivedGen' ? 'Generating…' : 'Send Assets to Received at 3PL'}
-                    </button>
-                  ))
-                ) : (
-                  (() => {
-                    const nextOp = getNextOperation();
-                    const busyKey = `${nextOp}Gen`;
-                    const isBusy = busy === busyKey;
-                    const opLabel = nextOp === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
-                    return (
-                      <button
-                        className="btn small"
-                        disabled={isBusy}
-                        onClick={sendToNextOperation}
-                      >
-                        {isBusy ? 'Generating…' : `Generate ${opLabel} CSV & Go to Review`}
-                      </button>
-                    );
-                  })()
-                )}
-              </div>
+              <NextStepAction
+                operationLabel={handoff.operationLabel}
+                toLabel={nextStageLabel(handoff.operation)}
+                description={handoff.description}
+                count={selected.size}
+                busy={busy === handoff.busyKey}
+                onClick={handoff.onClick}
+                actionLabel={handoff.actionLabel}
+              />
             </Sheet>
           ) : null}
         </>
@@ -646,7 +831,13 @@ export default function WatchPage({
         </Sheet>
       )}
 
-      {position?.stages?.rows ? <NextStep position={position} goto={goto} setReviewOperation={setReviewOperation} /> : null}
+      {position?.stages?.rows ? <NextStep
+          position={position}
+          goto={goto}
+          // Suppressed while the hand-off above is already offering it, so one step is not
+          // announced twice in the same layout — once with a button and once without.
+          offeredAbove={selected.size > 0 ? handoff?.operation : null}
+        /> : null}
 
       {run.result ? <ResultCard run={run} runId={runId} /> : null}
     </>
@@ -693,7 +884,15 @@ function filterViewRows(rows, tab) {
   }
 }
 
-function ViewTabContent({ stage, viewPoll, viewBusy, selected = new Set(), onToggle, onToggleAll }) {
+function ViewTabContent({
+  stage,
+  viewPoll,
+  viewBusy,
+  refreshError,
+  selected = new Set(),
+  onToggle,
+  onToggleAll,
+}) {
   const rows = filterViewRows(viewPoll?.snapshot?.rows, stage);
   const tabMeta = ASSET_VIEW_TABS.find((t) => t.id === stage);
   const selectable = stage === 'rmaInitiated' || stage === 'deadView';
@@ -780,15 +979,43 @@ function ViewTabContent({ stage, viewPoll, viewBusy, selected = new Set(), onTog
           </tbody>
         </table>
       </div>
+      {/* The instruction to press Refresh used to live here. Selecting the tab now does that, so
+          what is left to say is how current these rows are — without a stamp, an automatic refresh
+          that quietly failed is indistinguishable from one that worked. */}
       <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
         {stage === 'rmaInitiated'
-          ? 'Select devices to generate the RMA Returned CSV. Data from the initial-load snapshot — click Refresh from org for the latest.'
+          ? 'Select devices to generate the RMA Returned CSV. '
           : stage === 'deadView'
-          ? 'Devices flagged Non-Repairable by Repair Partner. Data from the initial-load snapshot — click Refresh from org for the latest.'
-          : <>Data from the initial-load snapshot — click <strong>Refresh from org</strong> for the latest status from Salesforce.</>}
+          ? 'Devices flagged Non-Repairable by Repair Partner. '
+          : ''}
+        <Freshness poll={viewPoll} busy={viewBusy} error={refreshError} />
       </p>
     </Sheet>
   );
+}
+
+/**
+ * How current the rows on screen are, and — if the automatic read failed — that it did.
+ *
+ * The whole point of refreshing on tab activation is that nobody has to think about it, which is
+ * exactly why a silent failure would be worse here than before: previously stale data meant you
+ * had not pressed the button, and now it means nothing visible at all unless this says so.
+ */
+function Freshness({ poll, busy, error }) {
+  if (busy) return <span className="muted">Checking Salesforce…</span>;
+
+  const at = poll?.snapshot?.lastPolledAt;
+  const stamp = at ? new Date(at).toLocaleTimeString() : null;
+
+  if (error) {
+    return (
+      <span style={{ color: 'var(--warn)' }}>
+        Could not reach Salesforce{stamp ? ` — showing the snapshot from ${stamp}` : ''}. The
+        Refresh button retries.
+      </span>
+    );
+  }
+  return <span className="muted">{stamp ? `Read from Salesforce at ${stamp}.` : 'Not read yet.'}</span>;
 }
 
 /**
@@ -854,9 +1081,12 @@ function StageCell({ stage, idmsStatus }) {
  * Installer App, the customer, or the order integration. Saying so is the point: it is the
  * difference between the app looking stuck and the app being finished with its part.
  */
-function NextStep({ position, goto, setReviewOperation }) {
+function NextStep({ position, goto, offeredAbove = null }) {
   const { position: pos, stages } = position;
   const next = position.next ?? { mine: [], theirs: [] };
+  // The hand-off panel above already offers this operation, with the ticked devices attached.
+  // Listing it again here would announce one step twice in the same layout.
+  const mine = next.mine.filter((step) => step.operation !== offeredAbove);
 
   return (
     <Sheet
@@ -890,12 +1120,12 @@ function NextStep({ position, goto, setReviewOperation }) {
         </>
       ) : null}
 
-      {next.mine.length ? (
+      {mine.length ? (
         <>
           <span className="eyebrow" style={{ marginBottom: '0.5rem' }}>
             Your next step
           </span>
-          {next.mine.map((step) => (
+          {mine.map((step) => (
             <div className="lc-next" key={step.operation}>
               <div style={{ minWidth: 0 }}>
                 <div className="lc-next-head">
@@ -911,19 +1141,18 @@ function NextStep({ position, goto, setReviewOperation }) {
                     : ' — this operation has a mailbox but no CSV format yet.'}
                 </div>
               </div>
-              <button
-                className={`btn ${step.sendable && !step.alreadySent ? '' : 'secondary'} small`}
-                onClick={() => {
-                  setReviewOperation(step.operation);
-                  goto('review');
-                }}
-              >
-                {step.alreadySent ? 'Already sent — review' : 'Go to Review & send'}
-              </button>
+              {/* No button here. This panel says what comes next; the hand-off above is what does
+                  it, and it carries the ticked devices with it. A second route to Review that took
+                  no selection would send the whole run when you meant a subset — the two looked
+                  interchangeable and were not. */}
+              {step.alreadySent ? <Badge tone="ok">sent</Badge> : null}
             </div>
           ))}
         </>
-      ) : pos ? (
+      ) : /* `next.mine`, not the filtered `mine`: an empty list because the hand-off above is
+            already offering the step is not the same as having nothing to send, and claiming
+            "your part of the chain is done" over a live send button would be simply false. */
+      pos && next.mine.length === 0 ? (
         <Callout tone="ok" title={`Nothing for you to send from ${pos.label}`}>
           Every arrow out of this stage belongs to another system
           {next.theirs.length ? ` — ${[...new Set(next.theirs.map((t) => t.actor))].join(', ')}` : ''}. The
@@ -999,5 +1228,38 @@ function ResultCard({ run, runId }) {
         </>
       ) : null}
     </Sheet>
+  );
+}
+
+/**
+ * The hand-off from one stage to the next, in the same shape the life cycle panel uses for
+ * "your next step": what the operation is, where it moves the devices, and one button.
+ *
+ * There were four of these written out separately — RMA Returned, Dead, Received at 3PL and the
+ * next operation in the chain — each a bare button beside a "N devices selected" count, and each
+ * looking like a different kind of thing to the operator. They are the same thing: take the ticked
+ * devices and carry them to the next step.
+ *
+ * The count is a badge rather than a sentence because the number is the part that matters — this
+ * generates for **exactly** the ticked devices, so a hand-off raised for a subset carries that
+ * subset and no more. Ticking the header checkbox is how you send them all.
+ */
+function NextStepAction({ operationLabel, toLabel, description, count, busy, onClick, actionLabel }) {
+  return (
+    <div className="lc-next">
+      <div style={{ minWidth: 0 }}>
+        <div className="lc-next-head">
+          <strong>{operationLabel}</strong>
+          {toLabel ? <span className="muted small">→ {toLabel}</span> : null}
+          <Badge tone="info">
+            {count} device{count !== 1 ? 's' : ''} selected
+          </Badge>
+        </div>
+        <div className="muted small">{description}</div>
+      </div>
+      <button className="btn" disabled={busy} onClick={onClick}>
+        {busy ? 'Generating…' : actionLabel}
+      </button>
+    </div>
   );
 }

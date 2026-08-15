@@ -1630,6 +1630,71 @@ pre.hex {
   color: var(--ink-muted);
   max-width: 74ch;
 }
+
+/* The folded-away explanation. The summary reads as an eyebrow, because that is what it replaces:
+   a label you skim past until you want it. Royal blue marks it as interactive, like every other
+   thing you can click. */
+.explainer {
+  margin: 0.55rem 0 0;
+}
+.explainer > summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: fit-content;
+  font-weight: 700;
+  font-size: 10.5px;
+  line-height: 1.4;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  list-style: none;
+  padding: 0.15rem 0;
+}
+.explainer > summary::-webkit-details-marker {
+  display: none;
+}
+/* Drawn rather than typed: a ▸ glyph at this size renders as a smudge in Plus Jakarta Sans, and
+   falls back differently again offline. Borders are the same shape everywhere. */
+.explainer > summary::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 3.5px 0 3.5px 5px;
+  border-color: transparent transparent transparent currentColor;
+  transition: transform 120ms ease;
+}
+.explainer[open] > summary::before {
+  transform: rotate(90deg);
+}
+.explainer > summary:hover {
+  text-decoration: underline;
+}
+.explainer > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.explainer-body {
+  color: var(--ink-muted);
+  max-width: 74ch;
+  padding-top: 0.35rem;
+  border-left: 2px solid var(--rule-soft);
+  padding-left: 0.75rem;
+  margin-top: 0.3rem;
+}
+.explainer-body > p {
+  margin: 0 0 0.55rem;
+}
+.explainer-body > p:last-child {
+  margin-bottom: 0;
+}
+/* A page-head explainer sits under the title's rule, so it needs its own breathing room. */
+.page-head .explainer {
+  margin-top: 0.7rem;
+}
 .break {
   word-break: break-all;
   white-space: normal;

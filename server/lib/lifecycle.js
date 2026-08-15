@@ -65,6 +65,10 @@ function index(raw) {
     byId,
     operationRoles: stripComments(raw.operationRoles),
     syncStatus: stripComments(raw.syncStatus),
+    // Operations that run at a stage without moving the device. Deliberately not in `transitions`:
+    // a self-loop there truncates operationChain(), which is what this change repairs. The filter
+    // guards against malformed entries (e.g., a bare $comment) after stripping documentation keys.
+    stageSteps: (raw.stageSteps ?? []).map(stripComments).filter((s) => s.operation),
   };
 }
 
@@ -181,6 +185,51 @@ export function operationChain() {
     model.operationChainCache = chain;
   }
   return model.operationChainCache;
+}
+
+/**
+ * The order operations are compared in when deciding whether a device is ahead of, at, or behind
+ * the stage being watched.
+ *
+ * `operationChain()` is the movement chain and deliberately excludes anything that does not move a
+ * device. But a device carrying `DATA_UPDATE_SYNC_SUCCESS` *is* somewhere — between initial load
+ * and shipment update — and leaving it out of the order makes `positionInChain` answer "unknown",
+ * which is then treated as not-done. So stage steps are spliced back in at the operation they
+ * precede.
+ *
+ * No family is involved. Position depends on which operation last wrote the sync status, and a
+ * family with no data-update sheet never produces that status, so one shared order is correct for
+ * every family and inert where a family cannot reach the step.
+ */
+export function pollingOrder() {
+  const model = loadLifecycle();
+  if (!model.pollingOrderCache) {
+    const order = [...operationChain()];
+    for (const step of model.stageSteps) {
+      if (order.includes(step.operation)) continue;
+      const at = order.indexOf(step.before);
+      // An unknown `before` appends rather than throwing: a step nobody can order is still better
+      // placed at the end than dropped, and dropping it is what causes the silent misreads above.
+      if (at === -1) order.push(step.operation);
+      else order.splice(at, 0, step.operation);
+    }
+    model.pollingOrderCache = order;
+  }
+  return model.pollingOrderCache;
+}
+
+/**
+ * Stage steps a family must complete before `operation` may be offered.
+ *
+ * Family decides *whether* a step is required, never where it sits in the order — see
+ * `pollingOrder`. An unknown or missing family requires nothing: refusing to offer an operation
+ * because a family could not be identified would block work on a guess.
+ */
+export function requiredStepsBefore(operation, family) {
+  if (!operation || !family) return [];
+  return loadLifecycle()
+    .stageSteps.filter((s) => s.before === operation && (s.requiredFor ?? []).includes(family))
+    .map((s) => s.operation);
 }
 
 /**
@@ -378,6 +427,14 @@ export function describeLifecycle(operations = {}) {
       enter: t.enter ?? null,
       note: t.note ?? null,
       uncertain: t.uncertain ?? null,
+    })),
+    stageSteps: model.stageSteps.map((s) => ({
+      operation: s.operation,
+      operationLabel: operations[s.operation]?.label ?? s.operation,
+      at: s.at,
+      before: s.before,
+      requiredFor: [...(s.requiredFor ?? [])],
+      note: s.note ?? null,
     })),
     operations: Object.entries(operations).map(([id, meta]) => {
       const movement = operationMovement(id);

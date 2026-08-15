@@ -43,6 +43,15 @@ const ATTEMPT_TTL_MS = 15 * 60 * 1000;
 const CYCLE_MS = 900;
 /** How long without progress before we ask the user to take over in the browser. */
 const STALL_CYCLES = 18;
+/**
+ * How many times the two-step form's "Next" may be clicked while waiting for a password field.
+ *
+ * One click is the ordinary identifier-first advance. A second covers a click that raced a
+ * re-render. Beyond that the page is not going to produce a password field for this username —
+ * it has redirected to an identity provider, or is refusing the account — and clicking again just
+ * re-posts the login form every few seconds for the rest of the attempt's fifteen minutes.
+ */
+const MAX_ADVANCE_CLICKS = 2;
 
 /** In-flight login attempts, keyed by id. Never serialised. */
 const attempts = new Map();
@@ -279,7 +288,23 @@ const SELECTORS = {
     '#oaapprove',
     'input[value="Allow"]',
   ],
+  /**
+   * The "Verify Your Identity" code box. Salesforce ships a different page per verification
+   * method and each names its input differently, so this list is per-method rather than generic.
+   *
+   * `#tc` is the authenticator-app (TOTP) page at
+   * `/_ui/identity/verification/method/TotpVerificationUi` — `<input type="text" id="tc"
+   * name="tc" maxlength="6" autocomplete="off">`, observed 2026-08-15. It is the method this org
+   * actually challenges with once a browser is no longer trusted, and missing it was what turned
+   * every background login into "open the browser window": the driver drove the credentials
+   * correctly, then could not see the one box it stops at, and stalled.
+   *
+   * Note `autocomplete="off"` — the `one-time-code` entry below does not cover it, and the id is
+   * `tc`, not `tc-verification-code`. `findVerificationCodeInput` backstops the rest.
+   */
   mfaCode: [
+    '#tc',
+    'input[name="tc"]',
     '#tc-verification-code',
     'input[name="EmailVerifCode"]',
     '#emc',
@@ -337,6 +362,41 @@ async function firstVisible(page, selectors) {
   return null;
 }
 
+/** Salesforce's own identity-verification route, whichever method it decides to challenge with. */
+const VERIFICATION_URL = /\/_ui\/identity\/verification\//;
+
+/**
+ * The "Verify Your Identity" code box.
+ *
+ * Tries the known per-method ids first, then falls back to "the short text input on a Salesforce
+ * verification page". Salesforce has a separate page and a separate input id for every method —
+ * authenticator app, email, SMS — so a fixed list is a standing bet that it never adds another.
+ * That bet has already been lost once: the TOTP page's `#tc` was missed, and every background
+ * login ended up handing the operator a browser instead of asking for a code.
+ *
+ * The fallback is deliberately narrow, because a false positive is worse than a miss: this is the
+ * one branch that parks the driver waiting for the operator, so matching a box that is not a code
+ * prompt would hang the login until its TTL rather than merely fail to drive a step. It therefore
+ * requires *all* of: Salesforce's verification URL, a visible text input, and a `maxlength` in the
+ * range a verification code occupies.
+ */
+async function findVerificationCodeInput(page) {
+  const known = await firstVisible(page, SELECTORS.mfaCode);
+  if (known) return known;
+
+  if (!VERIFICATION_URL.test(page.url())) return null;
+
+  const candidate = page.locator('input[type="text"][maxlength]').first();
+  try {
+    if (!(await candidate.count()) || !(await candidate.isVisible())) return null;
+    const maxLength = Number(await candidate.getAttribute('maxlength'));
+    if (!Number.isFinite(maxLength) || maxLength < 4 || maxLength > 10) return null;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The visible error on the page, if any.
  *
@@ -368,6 +428,86 @@ function isFatalError(message) {
   return /password|username|locked|deactivat|not exist|check your email address/i.test(message);
 }
 
+/**
+ * Record what was on screen when the driver stopped recognising it.
+ *
+ * The stall handler used to throw away the only fact that can fix it — which screen it could not
+ * read — leaving "Salesforce is showing a step this app does not recognise" as the whole of the
+ * evidence. A login screen this app cannot drive is the difference between staying in the
+ * background and handing a browser to the operator, so it is worth a file on disk.
+ *
+ * Written beside the Outlook failure dumps in `data/diagnostics/`. It deliberately records no
+ * field values: only structural attributes, the labels of buttons, and the page's own visible
+ * text. A typed password or verification code must never reach the disk.
+ */
+async function captureStallDiagnostic(attempt, page) {
+  try {
+    const dir = path.join(DATA_DIR, 'diagnostics');
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const base = path.join(dir, `sf-login-stall-${attempt.env}-${stamp}`);
+
+    const controls = await page
+      .$$eval('input, button, select, a[role="button"]', (els) =>
+        els
+          .filter((e) => e.offsetWidth || e.offsetHeight)
+          .map((e) => {
+            const type = e.getAttribute('type') ?? '';
+            // Only a control's own label is safe to read; anything else could be typed input.
+            const isLabelled =
+              e.tagName.toLowerCase() === 'button' ||
+              ['submit', 'button', 'checkbox', 'radio'].includes(type);
+            return {
+              tag: e.tagName.toLowerCase(),
+              type,
+              id: e.id || '',
+              name: e.getAttribute('name') ?? '',
+              placeholder: e.getAttribute('placeholder') ?? '',
+              ariaLabel: e.getAttribute('aria-label') ?? '',
+              autocomplete: e.getAttribute('autocomplete') ?? '',
+              inputmode: e.getAttribute('inputmode') ?? '',
+              maxlength: e.getAttribute('maxlength') ?? '',
+              label: isLabelled ? (e.value || e.innerText || '').trim().slice(0, 60) : '',
+            };
+          })
+      )
+      .catch(() => []);
+
+    const report = {
+      capturedAt: new Date().toISOString(),
+      env: attempt.env,
+      method: attempt.method,
+      url: page.url(),
+      title: await page.title().catch(() => null),
+      // How far the driver got, which says which screen this ought to have been.
+      progress: {
+        filledUsername: Boolean(attempt.filledUsername),
+        filledPassword: Boolean(attempt.filledPassword),
+        clickedLogin: Boolean(attempt.clickedLogin),
+        clickedSso: Boolean(attempt.clickedSso),
+        advanceClicks: attempt.advanceClicks ?? 0,
+        lastSoftError: attempt.softError ?? null,
+      },
+      controls,
+      bodyText: (await page.innerText('body').catch(() => ''))
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 2000),
+    };
+
+    fs.writeFileSync(`${base}.json`, JSON.stringify(report, null, 2));
+    await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => {});
+    attempt.stallDiagnostic = `${base}.json`;
+    console.warn(
+      `[sf-login] ${attempt.env}: stalled on an unrecognised screen (${report.url}) — ` +
+        `diagnostic written to ${base}.json`
+    );
+  } catch (err) {
+    // Never let the diagnostic break the login it is describing.
+    console.warn(`[sf-login] could not write the stall diagnostic: ${err.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Attempt state
 // ---------------------------------------------------------------------------
@@ -389,6 +529,9 @@ function publicAttempt(a) {
     // background attempt that stalls must never be a dead end.
     headless: Boolean(a.headless),
     canReveal: Boolean(a.headless) && !FINISHED.includes(a.status),
+    // Where the screen it could not read was written, so a stall can be diagnosed after the fact
+    // instead of only reproduced.
+    stallDiagnostic: a.stallDiagnostic ?? null,
   };
 }
 
@@ -632,6 +775,9 @@ async function runLogin(attempt) {
           'finish it — the session will be picked up automatically.'
         : 'Salesforce is showing a step this app does not recognise. Finish it in the browser ' +
           'window that is open — the session will be picked up automatically.';
+      // Record the screen. This fires once per attempt, on the cycle the stall trips, so it
+      // cannot turn a stuck login into a directory full of screenshots.
+      await captureStallDiagnostic(attempt, page);
     }
 
     await page.waitForTimeout(CYCLE_MS);
@@ -653,7 +799,7 @@ async function stepOnce(attempt, page) {
   }
 
   // 2. MFA code prompt — the one place we deliberately stop.
-  const codeInput = await firstVisible(page, SELECTORS.mfaCode);
+  const codeInput = await findVerificationCodeInput(page);
   if (codeInput) {
     const prompt = await page
       .locator('.description, .verificationDescription, #content h2, .subtitle')
@@ -661,10 +807,16 @@ async function stepOnce(attempt, page) {
       .innerText({ timeout: 400 })
       .catch(() => null);
 
+    // Where to read the code off differs by method, and "the code it just sent you" is wrong for
+    // the authenticator app — nothing was sent; the code is generated on the phone.
+    const fallbackPrompt = /TotpVerification/i.test(page.url())
+      ? 'Salesforce is asking for a verification code. Open your authenticator app and enter the ' +
+        'code it is showing.'
+      : 'Salesforce is asking for a verification code. Enter the code it just sent you.';
+
     attempt.status = 'awaiting-mfa';
     attempt.mfaPrompt =
-      [attempt.softError, prompt?.trim()].filter(Boolean).join(' — ') ||
-      'Salesforce is asking for a verification code. Enter the code it just sent you.';
+      [attempt.softError, prompt?.trim()].filter(Boolean).join(' — ') || fallbackPrompt;
     attempt.message = 'Waiting for your verification code…';
     attempt.softError = null;
 
@@ -785,10 +937,15 @@ async function stepOnce(attempt, page) {
   if (attempt.filledUsername && !attempt.filledPassword) {
     attempt.noPasswordCycles = passwordField ? 0 : (attempt.noPasswordCycles ?? 0) + 1;
 
-    if (attempt.noPasswordCycles >= 3) {
+    // Capped: clearing `noPasswordCycles` on every click is what made the give-up ceiling below
+    // unreachable, because a login page always has a visible submit button to find again. The
+    // attempt then re-posted the form every three cycles until its TTL expired, and the stall
+    // timer — the thing that offers the operator the browser — never fired at all.
+    if (attempt.noPasswordCycles >= 3 && (attempt.advanceClicks ?? 0) < MAX_ADVANCE_CLICKS) {
       const next = await firstVisible(page, [...SELECTORS.submitLogin, ...SELECTORS.advance]);
       if (next) {
         attempt.noPasswordCycles = 0;
+        attempt.advanceClicks = (attempt.advanceClicks ?? 0) + 1;
         attempt.message = 'Continuing to the password step…';
         await next.click().catch(() => {});
         await page.waitForTimeout(1200);

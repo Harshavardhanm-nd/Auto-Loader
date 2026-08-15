@@ -48,6 +48,26 @@ export function PageHead({ eyebrow, title, children }) {
 }
 
 /**
+ * The reasoning behind a panel, folded away until asked for.
+ *
+ * This app's screens each carry a paragraph or two explaining why the step works the way it does.
+ * That is worth keeping — most of it is hard-won and nowhere else on screen — but read once it is
+ * noise, and it pushed the controls that matter below the fold. So it folds.
+ *
+ * A native `<details>` rather than component state: it needs no re-render, it is keyboard
+ * accessible for free, and the browser's own find-in-page still reaches the text while collapsed,
+ * which a `hidden` div would not.
+ */
+export function Explainer({ label = 'How this works', children }) {
+  return (
+    <details className="explainer">
+      <summary>{label}</summary>
+      <div className="explainer-body">{children}</div>
+    </details>
+  );
+}
+
+/**
  * A sheet of paper laid on the desk. `title`/`eyebrow`/`actions` render the
  * ruled head; without them the sheet is a plain panel.
  */

@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, PageHead, Sheet, Stat } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, PageHead, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * Generated ids, per family and per series.
@@ -43,11 +43,13 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError, setRevi
   return (
     <>
       <PageHead eyebrow="Step 04 · Serial blocks" title="Ids">
-        <p>
-          One contiguous block per series, from a persisted counter. Every numeric series is
-          checked against <code>Asset.Name</code>; the prefixed pseudo-MACs are not, since they
-          are not asset names.
-        </p>
+        <Explainer>
+          <p>
+            One contiguous block per series, from a persisted counter. Every numeric series is
+            checked against <code>Asset.Name</code>; the prefixed pseudo-MACs are not, since they
+            are not asset names.
+          </p>
+        </Explainer>
       </PageHead>
 
       <Sheet>
@@ -132,9 +134,11 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError, setRevi
 
       {cursors?.length ? (
         <Sheet eyebrow="Persisted counters" title="Next value per series">
-          <p className="prose small">
-            Held in <code>data/counters.json</code>, keyed <code>env:templateId:series</code>.
-          </p>
+          <Explainer>
+            <p className="prose small">
+              Held in <code>data/counters.json</code>, keyed <code>env:templateId:series</code>.
+            </p>
+          </Explainer>
           <div className="table-wrap">
             <table>
               <thead>

@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, KeyValue, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, KeyValue, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * Family and SKU picker.
@@ -21,20 +21,50 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
   const [groups, setGroups] = React.useState([]);
   const [activeFamily, setActiveFamily] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  // Escape hatch from the family narrowing — see the catalog effect below.
+  const [showAll, setShowAll] = React.useState(false);
 
   const operation = setup.operation ?? 'initialLoad';
 
   React.useEffect(() => {
-    Promise.all([api.families(env), api.templates(), api.products(env).catch(() => null)])
-      .then(([fam, tpl, products]) => {
+    Promise.all([api.families(env), api.templates()])
+      .then(([fam, tpl]) => {
         setFamilies(fam);
         setTemplates(tpl.templates);
-        setCatalog(products);
         const first = fam.families.find((f) => f.operations.some((o) => o.operation === operation));
         setActiveFamily((current) => current ?? first?.family ?? null);
       })
       .catch(onError);
   }, [env, operation, onError]);
+
+  /**
+   * The catalog is fetched per family, so choosing a family narrows the table to that family's
+   * devices instead of leaving all 169 serialized products on screen.
+   *
+   * Narrowing happens on the server — the rules live in `config/profiles.json`, because the org
+   * has no single field that says which family a product belongs to (Octo is a *model* inside the
+   * Driveri device type, not a type of its own). The response says whether the narrowing was
+   * actually applied, which is what `showAll` and the note below are reading.
+   *
+   * `showAll` is not a convenience. A rule goes stale the moment someone renames a device type in
+   * Salesforce, and a filter nobody can turn off would hide the SKU this run needs with no way
+   * back.
+   */
+  React.useEffect(() => {
+    if (!activeFamily) return;
+    let cancelled = false;
+    api
+      .products(env, showAll ? {} : { family: activeFamily })
+      .then((products) => {
+        if (!cancelled) setCatalog(products);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [env, activeFamily, showAll]);
 
   const supported = React.useMemo(
     () =>
@@ -48,7 +78,13 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
   const group = groups.find((g) => g.family === activeFamily);
   const activeTemplate = activeFamily ? templateFor(activeFamily) : null;
 
-  /** Catalog rows relevant to the active family, matched loosely on the family's own SKU. */
+  /**
+   * The search box, applied to whatever the server already narrowed to this family.
+   *
+   * The family narrowing itself is not done here — it is a fact about the org rather than about
+   * the text in the box, and doing it server-side keeps one source of truth. This only filters
+   * within that.
+   */
   const results = React.useMemo(() => {
     if (!catalog || !activeTemplate) return [];
     const term = search.trim().toLowerCase();
@@ -61,7 +97,10 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
           .toLowerCase();
         return term.split(/\s+/).every((t) => hay.includes(t));
       })
-      .slice(0, 120);
+      // Matches the server's own page size, so the count in the scope line above is always the
+      // number of rows actually listed. At 120 the two disagreed the moment a family had more
+      // than that — Driveri has 135 — which reads as rows having gone missing.
+      .slice(0, 200);
   }, [catalog, activeTemplate, search]);
 
   const ensureGroup = (family) => {
@@ -137,11 +176,13 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
   return (
     <>
       <PageHead eyebrow="Step 03 · Manifest" title="Families & SKUs">
-        <p>
-          Each family is its own CSV and its own email. Pick as many as this batch covers —{' '}
-          <span className="mono">{operation}</span> for tracking id{' '}
-          <span className="mono">{setup.trackingId}</span>.
-        </p>
+        <Explainer>
+          <p>
+            Each family is its own CSV and its own email. Pick as many as this batch covers —{' '}
+            <span className="mono">{operation}</span> for tracking id{' '}
+            <span className="mono">{setup.trackingId}</span>.
+          </p>
+        </Explainer>
       </PageHead>
 
       {supported.length === 0 && families ? (
@@ -151,13 +192,16 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
         </Callout>
       ) : null}
 
-      <Sheet eyebrow="One family, one file, one email" title="Family">
+      <Sheet title="Family">
         <Segmented
           label="Product family"
           value={activeFamily}
           onChange={(family) => {
             setActiveFamily(family);
             ensureGroup(family);
+            // "Show all" belongs to the family you turned it on for. Carrying it across would mean
+            // picking a family and still facing the whole catalog, which is the thing this fixes.
+            setShowAll(false);
           }}
           options={supported.map((f) => {
             const picked = groups.find((g) => g.family === f.family)?.lines.length ?? 0;
@@ -264,6 +308,13 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
               Catalog unavailable — connect to Salesforce to search it, or use the template SKU above.
             </p>
           ) : (
+            <>
+              <CatalogScope
+                catalog={catalog}
+                familyLabel={activeTemplate.familyLabel ?? activeFamily}
+                showAll={showAll}
+                onToggle={() => setShowAll((v) => !v)}
+              />
             <div className="picker-results">
               {results.length === 0 ? (
                 <p className="muted small" style={{ padding: '0.85rem', margin: 0 }}>
@@ -295,13 +346,14 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
                   );
                 })
               )}
-            </div>
+              </div>
+            </>
           )}
         </Sheet>
       ) : null}
 
       {usableGroups.length ? (
-        <Sheet eyebrow="Ready to mint" title="This run">
+        <Sheet title="This run">
           {usableGroups.map((g) => (
             <div key={g.family} style={{ marginBottom: '1.15rem' }}>
               <h3 style={{ marginBottom: '0.5rem' }}>
@@ -410,5 +462,57 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
         </button>
       </div>
     </>
+  );
+}
+
+/**
+ * What the catalog table is currently showing, and how to get out of it.
+ *
+ * A narrowed table looks exactly like a short catalog, so the count has to say which it is —
+ * otherwise "my SKU isn't here" and "this family only has two SKUs" are indistinguishable.
+ *
+ * `filterApplied: false` covers the two cases where the narrowing could not be trusted, and they
+ * are reported differently because the operator can act on one of them:
+ *   - `no-filter-declared` — nothing in config says what this family covers. Haptic, today: the
+ *     org has no serialized Haptic product at all.
+ *   - `no-matches` — a rule exists and matched nothing, which means it has gone stale against the
+ *     org rather than that the family is empty.
+ */
+function CatalogScope({ catalog, familyLabel, showAll, onToggle }) {
+  const { total, catalogTotal, filterApplied, filterReason } = catalog;
+  const narrowed = filterApplied && !showAll;
+
+  return (
+    <div className="btn-row" style={{ marginBottom: '0.7rem', alignItems: 'baseline' }}>
+      <span className="muted small">
+        {narrowed ? (
+          <>
+            Showing the <strong>{familyLabel}</strong> devices — {total} of {catalogTotal} products.
+          </>
+        ) : showAll ? (
+          <>Showing all {total} serialized products.</>
+        ) : filterReason === 'no-filter-declared' ? (
+          <>
+            No catalog rule for <strong>{familyLabel}</strong>, so all {total} products are listed.
+            Add one under <code>catalogFilters</code> in <code>config/profiles.json</code>.
+          </>
+        ) : filterReason === 'no-matches' ? (
+          // Deliberately not "the rule is stale". It might be — or the org may simply hold no such
+          // product, which is Haptic's case: HAPTIC is a real active series with nothing in it.
+          // Both look identical from here, so claim only what is certain.
+          <>
+            No serialized product in this org belongs to <strong>{familyLabel}</strong>. Showing all{' '}
+            {total} products rather than an empty table.
+          </>
+        ) : (
+          <>Showing all {total} serialized products.</>
+        )}
+      </span>
+      {filterApplied || showAll ? (
+        <button className="btn quiet small" onClick={onToggle}>
+          {showAll ? `Back to ${familyLabel} only` : `Show all ${catalogTotal}`}
+        </button>
+      ) : null}
+    </div>
   );
 }
