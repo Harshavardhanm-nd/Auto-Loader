@@ -1099,6 +1099,22 @@ runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
               };
             }),
           };
+
+          // The atStage split ran before this enrichment, so `snapshot.atStage.rows` still holds the
+          // pre-enrichment row objects — and that is the array the Watch page actually reads, since
+          // it spreads `{ ...fullSnapshot, ...fullSnapshot.atStage }` and `rows` is overwritten.
+          // Without this, every accessory disappears the moment any device is ahead of or behind the
+          // stage, and the completeness gate silently passes everything.
+          if (snapshot.atStage?.rows?.length) {
+            const enrichedById = new Map(snapshot.rows.map((r) => [String(r.deviceId), r]));
+            snapshot = {
+              ...snapshot,
+              atStage: {
+                ...snapshot.atStage,
+                rows: snapshot.atStage.rows.map((r) => enrichedById.get(String(r.deviceId)) ?? r),
+              },
+            };
+          }
         }
       } catch (err) {
         // If accessory fetch fails, still return the snapshot without accessories
