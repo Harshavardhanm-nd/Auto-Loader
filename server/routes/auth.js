@@ -23,6 +23,7 @@ import {
 } from '../services/mailer.js';
 import { clearStoredSession, closeOutlook } from '../services/outlook-web-service.js';
 import { getEnvironment, loadEnvironments, loadOperations, unconfiguredValues } from '../lib/config.js';
+import { operationOrder } from '../lib/lifecycle.js';
 
 export const authRouter = express.Router();
 
@@ -33,7 +34,10 @@ function mailboxRows(envName) {
   const lists = env.distributionLists ?? {};
   const rows = [];
 
-  for (const [operation, meta] of Object.entries(operations)) {
+  // Same order as Review's operation selector and Watch's stage tabs — this table is read as the
+  // sequence a device goes through, so a stage step belongs before the operation it precedes.
+  for (const operation of operationOrder(Object.keys(operations))) {
+    const meta = operations[operation];
     if (meta.needsMail === false) continue;
     const shared = lists.byOperation?.[operation];
     if (shared) {

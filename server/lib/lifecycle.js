@@ -219,6 +219,35 @@ export function pollingOrder() {
 }
 
 /**
+ * The order a set of operations should be *listed* in — Review's operation selector and Watch's
+ * stage tabs, which must agree with each other and with the chart.
+ *
+ * A stage step has no movement to sort on, and both lists used to strand it at the end: Watch
+ * ranked each tab by the stage its operation moves the device *to* and defaulted a step to 99,
+ * while Review used the raw key order of `config/environments.json`. Data update therefore sat
+ * *after* Shipment update in both, the reverse of the order a device meets them — `stageSteps`
+ * declares `before: "shipmentUpdate"` precisely because Octo owes the correction before it ships.
+ *
+ * `pollingOrder()` already answers this for the chain, steps included, so this is that order first
+ * and then everything else in the order it was declared. The off-chain operations (`deviceDead`,
+ * `undoDead`, the mailbox-only ones) have no position on the walk this app drives, so their
+ * relative order stays a config decision rather than something derived and reshuffled.
+ *
+ * Pure and non-mutating: callers pass their own list and get a new one.
+ */
+export function operationOrder(ids = []) {
+  const chain = pollingOrder();
+  const rank = (id) => {
+    const index = chain.indexOf(id);
+    return index === -1 ? chain.length : index;
+  };
+  return [...ids]
+    .map((id, declared) => ({ id, declared }))
+    .sort((a, b) => rank(a.id) - rank(b.id) || a.declared - b.declared)
+    .map((x) => x.id);
+}
+
+/**
  * Stage steps a family must complete before `operation` may be offered.
  *
  * Family decides *whether* a step is required, never where it sits in the order — see
@@ -436,7 +465,10 @@ export function describeLifecycle(operations = {}) {
       requiredFor: [...(s.requiredFor ?? [])],
       note: s.note ?? null,
     })),
-    operations: Object.entries(operations).map(([id, meta]) => {
+    // Ordered here rather than in the UI, so Watch's stage tabs and Review's operation selector
+    // cannot drift apart. A stage step has no movement to rank on and used to fall to the end.
+    operations: operationOrder(Object.keys(operations)).map((id) => {
+      const meta = operations[id];
       const movement = operationMovement(id);
       const role = operationRole(id);
       return {

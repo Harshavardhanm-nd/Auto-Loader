@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { COLLISION_FIELDS, takenFromRecords, collisionChunkSize } from './sf-client.js';
+import { COLLISION_FIELDS, takenFromRecords, collisionChunkSize, QUERY_URL_LIMIT } from './sf-client.js';
 import { TEMPLATES_DIR } from '../lib/paths.js';
 
 /**
@@ -97,13 +97,13 @@ describe('reading taken ids out of the query result', () => {
 });
 
 describe('query size', () => {
-  test('the chunk size keeps the URL under Salesforce\'s limit for every field checked', () => {
-    // One OR clause per field, so widening the field list has to shrink the chunk. An id is ~11
-    // digits plus quotes and a comma; the encoded URL is what actually hits the 8 KB ceiling.
+  test('the chunk size keeps the URL under Salesforce\'s limit', () => {
+    // Each collision query now names ONE field rather than ORing all four, so the budget is spent
+    // on a single IN list — see `collisionQueryPlan`. The encoded URL is what hits the ceiling,
+    // and `collision-query.test.js` asserts the generated plan against it directly. This keeps the
+    // cheap sanity bound: a chunk must be neither unbounded nor small enough to go chatty again.
     const chunk = collisionChunkSize();
-    const perId = "'12345678901',".length;
-    const estimated = COLLISION_FIELDS.length * chunk * perId;
-    assert.ok(estimated < 6000, `estimated ${estimated} bytes of IN lists is too close to the limit`);
-    assert.ok(chunk >= 25, 'chunking this small would make allocation needlessly chatty');
+    assert.ok(chunk * "'12345678901',".length < QUERY_URL_LIMIT, `chunk of ${chunk} risks the URL limit`);
+    assert.ok(chunk >= 200, 'chunking this small is what made one Octo allocation 14 round trips');
   });
 });

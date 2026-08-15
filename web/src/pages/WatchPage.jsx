@@ -31,7 +31,8 @@ export default function WatchPage({
   refreshRun,
   goto,
   onError,
-  setReviewOperation,
+  pendingOperation,
+  setPendingOperation,
   setActiveOperation,
 }) {
   const [stage, setStage] = React.useState('initialLoad');
@@ -54,6 +55,28 @@ export default function WatchPage({
   React.useEffect(() => {
     api.lifecycle().then(setModel).catch(() => setModel(null));
   }, []);
+
+  /**
+   * Open on the tab the page we came from was showing, once, then clear it.
+   *
+   * Arriving from Review with Shipment update selected should land on the Shipment update tab, not
+   * reset to Initial load. Validated against this page's own strip rather than trusted: Review can
+   * be showing an operation that is not watchable at all — `deviceDead` has a sheet and a mailbox
+   * but no sync status, so there is no tab to select — and silently selecting a tab that does not
+   * exist would render an empty stage with no way back to it.
+   */
+  React.useEffect(() => {
+    if (!pendingOperation) return;
+    if (!model) return; // wait for the stage list, so the check below can actually be made
+    const selectable =
+      ASSET_VIEW_TAB_IDS.has(pendingOperation) ||
+      pollableStages(model).some((s) => s.id === pendingOperation);
+    if (selectable) {
+      setStage(pendingOperation);
+      setSelected(new Set());
+    }
+    setPendingOperation(null);
+  }, [pendingOperation, setPendingOperation, model]);
 
   // The stage being watched is the operation on screen, so the Runbar counts its devices.
   React.useEffect(() => {
@@ -331,8 +354,7 @@ export default function WatchPage({
         onError(new Error(`Nothing was written for ${families}. ${result.blocked[0].message}`));
       }
       await refreshRun();
-      setReviewOperation(operation);
-      goto('review');
+      goto('review', { operation });
     } catch (err) {
       onError(err);
     } finally {
@@ -347,8 +369,7 @@ export default function WatchPage({
     try {
       await api.generate(runId, 'received', [...selected]);
       await refreshRun();
-      setReviewOperation('received');
-      goto('review');
+      goto('review', { operation: 'received' });
     } catch (err) {
       onError(err);
     } finally {
@@ -361,8 +382,7 @@ export default function WatchPage({
     try {
       await api.generate(runId, 'rmaReturned', [...selected]);
       await refreshRun();
-      setReviewOperation('rmaReturned');
-      goto('review');
+      goto('review', { operation: 'rmaReturned' });
     } catch (err) {
       onError(err);
     } finally {
@@ -375,8 +395,7 @@ export default function WatchPage({
     try {
       await api.generate(runId, 'deviceDead', [...selected]);
       await refreshRun();
-      setReviewOperation('deviceDead');
-      goto('review');
+      goto('review', { operation: 'deviceDead' });
     } catch (err) {
       onError(err);
     } finally {
@@ -1034,7 +1053,11 @@ function pollableStages(model) {
     ];
   }
 
-  const order = new Map(model.stages.map((s, i) => [s.code, i]));
+  // The payload is already in the order a device meets these — `operationOrder` on the server puts
+  // the polling chain first, stage steps included. This used to re-sort by the stage an operation
+  // moves the device *to*, which a stage step does not have: `dataUpdate` fell to the `?? 99`
+  // default and rendered last, after Received at 3PL, when it runs *before* the shipment update.
+  // Ordering it here again would be a second opinion for Review's selector to disagree with.
   return model.operations
     .filter((o) => o.syncStatus)
     .map((o) => ({
@@ -1042,9 +1065,7 @@ function pollableStages(model) {
       label: o.label,
       success: `${o.syncStatus}_SYNC_SUCCESS`,
       movesTo: o.movement ? model.stages.find((s) => s.code === o.movement.to[0])?.label ?? null : null,
-      rank: o.movement ? order.get(o.movement.to[0]) ?? 99 : 99,
-    }))
-    .sort((a, b) => a.rank - b.rank);
+    }));
 }
 
 function IdmsStatusLabel({ stage }) {

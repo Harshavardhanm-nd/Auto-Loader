@@ -10,7 +10,7 @@ import { Badge, Callout, Explainer, PageHead, Sheet, Stat } from '../components/
  * persisted counter so each block is contiguous and auditable, and are still checked against
  * the org before anything is sent.
  */
-export default function IdsPage({ runId, run, refreshRun, goto, onError, setReviewOperation }) {
+export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
   const [busy, setBusy] = React.useState(null);
   const [cursors, setCursors] = React.useState(null);
   const [checkResult, setCheckResult] = React.useState(null);
@@ -222,8 +222,9 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError, setRevi
             onClick={() =>
               act(async () => {
                 await api.generate(runId, run.operation);
-                setReviewOperation(null);
-                goto('review');
+                // Land on the operation these files were just written for, rather than on
+                // whatever Review happened to show last.
+                goto('review', { operation: run.operation });
               }, 'generate')
             }
           >

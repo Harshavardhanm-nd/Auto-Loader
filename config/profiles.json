@@ -69,10 +69,10 @@
     ]
   },
   "catalogFilters": {
-    "$comment": "Which serialized-catalog rows the Families & SKUs picker shows for each family, keyed on Product_Series__c — the org's \"L3 Product Series\". That field is the only one naming a product line exactly; Device_Type__c calls every Driveri model AND Octo \"Driveri\". Driveri is declared as every L1 Device except the D810 series rather than a list of its seven current series, so a new D-series model appears without a config edit while staying disjoint from Octo. HAPTIC is a real active series in the org with no serialized product carrying it — the rule is declared anyway, so the picker can say the org has none rather than that nobody configured it. Verified against testing 2026-08-15: driveri 135, octo 2, dhub 2, dms 2, vbus 3, haptic 0, of 169.",
+    "$comment": "Which serialized-catalog rows the Families & SKUs picker shows for each family, keyed on Product_Series__c — the org's \"L3 Product Series\". That field is the only one naming a product line exactly; Device_Type__c calls every Driveri model AND Octo \"Driveri\". Driveri is declared as every device except the D810 series rather than a list of its seven current series, so a new D-series model appears without a config edit while staying disjoint from Octo. \"Every device\" is sfFamily Hardware — the STANDARD Product2.Family — not the custom L1_Product_Family__c, which does not exist on Product2 in staging and took that org's picker out entirely until 2026-08-15. The two are the same partition where both exist (testing: all 137 L1=Device rows are Family=Hardware, all 33 L1=Accessory rows are Family=Accessory), and a standard field cannot go missing between sandboxes. Haptic is declared on BOTH its series and its device type with match 'any' — see the haptic rule's own comment. Verified 2026-08-15, identical in both orgs: driveri 135, octo 2, dhub 2, dms 2, vbus 3, haptic 1 — of 170 catalog rows in testing and 168 in staging.",
     "driveri": {
-      "l1Family": [
-        "Device"
+      "sfFamily": [
+        "Hardware"
       ],
       "excludeSeries": [
         "D810"
@@ -99,9 +99,14 @@
       ]
     },
     "haptic": {
+      "$comment": "ACCAM1HAPTICMDL is one product the two sandboxes describe differently — testing has series HAPTIC and Product_Serialized__c No, staging has a BLANK series and Serialized Yes. Device_Type__c is HAPTIC in both and matches exactly one product in each org, so either signal identifies the family: match 'any'. The series stays listed even though staging's copy has none, because declaredSeries reads it to widen the query past the serialized gate — which is the only reason testing's copy, flagged No, is in the catalog at all.",
       "series": [
         "HAPTIC"
-      ]
+      ],
+      "deviceType": [
+        "HAPTIC"
+      ],
+      "match": "any"
     }
   }
 }

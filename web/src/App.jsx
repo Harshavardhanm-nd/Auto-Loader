@@ -43,7 +43,19 @@ export default function App() {
   const [runId, setRunId] = React.useState(null);
   const [run, setRun] = React.useState(null);
   const [error, setError] = React.useState(null);
-  const [reviewOperation, setReviewOperation] = React.useState(null);
+  /**
+   * The operation the next page should open on, handed over by whoever navigated.
+   *
+   * Review and Watch are two views of the same operation, and moving between them used to drop
+   * it: leaving Review with Shipment update selected landed on Watch's Initial load tab, and the
+   * operator had to re-find where they already were. Only the Watch → Review hand-off carried
+   * anything, through a one-way `reviewOperation`.
+   *
+   * It is consumed once, by the arriving page, which validates it against its own list — Watch's
+   * strip also holds read-only Asset views (`installed`, `rmaPending`) that are not operations at
+   * all, so neither page trusts what it is handed.
+   */
+  const [pendingOperation, setPendingOperation] = React.useState(null);
   // Which operation the page in front of you is about. Review and Watch each own an operation
   // selector; they report it up so the Runbar's Operation and Units describe what is on screen
   // rather than the run as a whole. Cleared on navigation, so a page without one falls back.
@@ -101,9 +113,16 @@ export default function App() {
   const navState = { connected, setup, runId };
   const activeEnv = environments.find((e) => e.name === env);
 
-  const goto = (id) => {
+  /**
+   * @param {string} id                      page to show
+   * @param {{operation?: string|null}} opts  operation the destination should open on. Defaults to
+   *   whatever the page being left was showing, so Review ⇄ Watch keep their place without every
+   *   call site remembering to pass it. Pass `null` explicitly to land on the page's own default.
+   */
+  const goto = (id, opts = {}) => {
     setError(null);
-    // Reset first; a page that owns an operation re-reports it as it mounts, and one that does
+    setPendingOperation('operation' in opts ? opts.operation : activeOperation);
+    // Reset after: a page that owns an operation re-reports it as it mounts, and one that does
     // not leaves it null so the Runbar falls back to the run's own operation.
     setActiveOperation(null);
     setPage(id);
@@ -115,7 +134,7 @@ export default function App() {
     setSetup(EMPTY_SETUP);
     setRunId(null);
     setRun(null);
-    setReviewOperation(null);
+    setPendingOperation(null);
     goto((options.connected ?? connected) ? 'setup' : 'connect');
   };
 
@@ -133,8 +152,8 @@ export default function App() {
     goto,
     onError: handleError,
     startNewRun,
-    reviewOperation,
-    setReviewOperation,
+    pendingOperation,
+    setPendingOperation,
     setActiveOperation,
   };
 
