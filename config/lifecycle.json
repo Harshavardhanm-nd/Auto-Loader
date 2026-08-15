@@ -145,13 +145,6 @@
     },
     {
       "from": -2,
-      "to": -2,
-      "label": "Data Update",
-      "driver": { "kind": "operation", "operation": "dataUpdate" },
-      "note": "Octo requires this data correction step after initial load. Other families may skip it."
-    },
-    {
-      "from": -2,
       "to": -1,
       "label": "Shipment Load",
       "driver": { "kind": "operation", "operation": "shipmentUpdate" }
@@ -318,6 +311,17 @@
       "label": "Undo Dead Device",
       "driver": { "kind": "operation", "operation": "undoDead" },
       "uncertain": "Read off the chart as returning to New. The arrow also grazes Shipped Active; New is the reading that matches the operation's name and the sellable-stock meaning of stage 1."
+    }
+  ],
+
+  "stageSteps": [
+    {
+      "$comment": "Operations that run at a stage without moving the device. They are not transitions — a self-loop breaks operationChain(), which walks the graph taking the first arrow out of each stage and would follow this one straight back to where it started.",
+      "operation": "dataUpdate",
+      "at": -2,
+      "before": "shipmentUpdate",
+      "requiredFor": ["octo"],
+      "note": "Octo corrects device data at Pre-Production before shipping. Haptic has a data-update sheet and may run it; families without one cannot."
     }
   ],
 
