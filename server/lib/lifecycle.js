@@ -433,7 +433,7 @@ export function describeLifecycle(operations = {}) {
       operationLabel: operations[s.operation]?.label ?? s.operation,
       at: s.at,
       before: s.before,
-      requiredFor: s.requiredFor ?? [],
+      requiredFor: [...(s.requiredFor ?? [])],
       note: s.note ?? null,
     })),
     operations: Object.entries(operations).map(([id, meta]) => {
