@@ -66,8 +66,9 @@ function index(raw) {
     operationRoles: stripComments(raw.operationRoles),
     syncStatus: stripComments(raw.syncStatus),
     // Operations that run at a stage without moving the device. Deliberately not in `transitions`:
-    // a self-loop there truncates operationChain(), which is what this change repairs.
-    stageSteps: (raw.stageSteps ?? []).filter((s) => s.operation),
+    // a self-loop there truncates operationChain(), which is what this change repairs. The filter
+    // guards against malformed entries (e.g., a bare $comment) after stripping documentation keys.
+    stageSteps: (raw.stageSteps ?? []).map(stripComments).filter((s) => s.operation),
   };
 }
 
