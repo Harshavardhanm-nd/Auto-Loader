@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, PageHead, Sheet, Stat } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, PageHead, Sheet, Stat } from '../components/ui.jsx';
 import LifecycleMap from '../components/LifecycleMap.jsx';
 
 /**
@@ -46,12 +46,14 @@ export default function LifecyclePage({ env, runId, run, goto, onError }) {
   return (
     <>
       <PageHead eyebrow="Device life cycle" title="Life cycle">
-        <p>
-          A device walks this graph. <code>{model.stageField}</code> on the Asset carries the stage
-          as a numeric code, and every arrow is either something you send a CSV for or something
-          another system does. {model.transitions.filter((t) => t.operation).length} of{' '}
-          {model.transitions.length} transitions are yours.
-        </p>
+        <Explainer>
+          <p>
+            A device walks this graph. <code>{model.stageField}</code> on the Asset carries the stage
+            as a numeric code, and every arrow is either something you send a CSV for or something
+            another system does. {model.transitions.filter((t) => t.operation).length} of{' '}
+            {model.transitions.length} transitions are yours.
+          </p>
+        </Explainer>
       </PageHead>
 
       {position?.read === 'unavailable' && runId ? (
@@ -108,11 +110,13 @@ export default function LifecyclePage({ env, runId, run, goto, onError }) {
       <OperationLadder model={model} />
 
       {model.uncertainties.length ? (
-        <Sheet eyebrow="Read off the chart, not confirmed" title={`${model.uncertainties.length} inferred arrow(s)`}>
-          <p className="prose small">
-            These endpoints were ambiguous on the flow chart. Each is one line in{' '}
-            <code>config/lifecycle.json</code> — correcting one there corrects it everywhere.
-          </p>
+        <Sheet title={`${model.uncertainties.length} inferred arrow(s)`}>
+          <Explainer>
+            <p className="prose small">
+              These endpoints were ambiguous on the flow chart. Each is one line in{' '}
+              <code>config/lifecycle.json</code> — correcting one there corrects it everywhere.
+            </p>
+          </Explainer>
           <ul className="lc-uncertain">
             {model.uncertainties.map((u) => (
               <li key={u.key}>
@@ -291,7 +295,7 @@ function OperationLadder({ model }) {
   const other = model.operations.filter((o) => !o.movement);
 
   return (
-    <Sheet eyebrow="Operations, placed on the chart" title="What each send does">
+    <Sheet title="What each send does">
       <div className="table-wrap">
         <table>
           <thead>
@@ -348,10 +352,12 @@ function OperationLadder({ model }) {
           </tbody>
         </table>
       </div>
-      <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
-        An operation can be fully modelled and still unsendable — four have a mailbox but no sheet,
-        so the chart knows where they go and the app still cannot get them there.
-      </p>
+      <Explainer>
+        <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
+          An operation can be fully modelled and still unsendable — four have a mailbox but no sheet,
+          so the chart knows where they go and the app still cannot get them there.
+        </p>
+      </Explainer>
     </Sheet>
   );
 }

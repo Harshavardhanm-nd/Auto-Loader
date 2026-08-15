@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Field, KeyValue, PageHead, Segmented, Sheet, Spinner } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, Field, KeyValue, PageHead, Segmented, Sheet, Spinner } from '../components/ui.jsx';
 
 /**
  * Two connections, both credential-in-memory:
@@ -14,11 +14,13 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
   return (
     <>
       <PageHead eyebrow="Step 01 · Sessions" title="Connect">
-        <p>
-          Nothing here is written to a <code>.env</code> file. Salesforce credentials are used
-          once to drive a login and then discarded — only the session id is stored, and only
-          until Salesforce expires it. Mail credentials live in memory for this session.
-        </p>
+        <Explainer>
+          <p>
+            Nothing here is written to a <code>.env</code> file. Salesforce credentials are used
+            once to drive a login and then discarded — only the session id is stored, and only
+            until Salesforce expires it. Mail credentials live in memory for this session.
+          </p>
+        </Explainer>
       </PageHead>
 
       {activeEnv && !activeEnv.ready ? (
@@ -50,12 +52,18 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
 
       {activeEnv?.mailboxes?.length ? (
         <Sheet className="section-gap" eyebrow="Routing" title="Where this environment sends">
-          <p className="prose small">
-            The destination mailbox is the only thing that distinguishes one operation from
-            another — the CSV bytes carry no marker. Every send is matched on the mailbox's local
-            part first, because matching the domain alone would accept the wrong mailbox: every
-            address here is <code>@netradyne.com</code>.
-          </p>
+          <Explainer>
+            <p className="prose small">
+              The destination mailbox is the only thing that distinguishes one operation from
+              another — the CSV bytes carry no marker. Every send is matched on the mailbox's local
+              part first, because matching the domain alone would accept the wrong mailbox: every
+              address here is <code>@netradyne.com</code>.
+            </p>
+            <p className="prose small">
+              A pipeline whose address is still a placeholder can generate and download files, but
+              sending it is refused.
+            </p>
+          </Explainer>
           <div className="table-wrap">
             <table>
               <thead>
@@ -83,10 +91,6 @@ export default function ConnectPage({ env, activeEnv, session, refreshSession, g
               </tbody>
             </table>
           </div>
-          <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
-            A pipeline whose address is still a placeholder can generate and download files, but
-            sending it is refused.
-          </p>
         </Sheet>
       ) : null}
 
@@ -141,9 +145,12 @@ function StartupCheck({ check }) {
 
 function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
   const sf = session?.salesforce;
-  // Password is the default. The org login page carries the username/password form alongside the
-  // SSO button, and using it stays entirely within Salesforce — the SSO route detours through
-  // Microsoft Entra, which is several more steps for the same result.
+  // Password is the default: it stays entirely within Salesforce, where the SSO route detours
+  // through Microsoft Entra and back for the same session.
+  //
+  // Note the org page is identifier-first — a username field and "Log In to Sandbox", with no
+  // password field until that is submitted (verified against both sandboxes 2026-08-14). The
+  // driver handles the two steps; this is only a warning against assuming one form holds both.
   const [method, setMethod] = React.useState('password');
   const [username, setUsername] = React.useState('');
   const [password, setPassword] = React.useState('');
@@ -211,7 +218,6 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
 
   return (
     <Sheet
-      eyebrow="Read-only session"
       title="Salesforce"
       live={Boolean(inFlight)}
       actions={sf?.connected ? <Badge tone="ok">connected</Badge> : <Badge tone="muted">not connected</Badge>}
@@ -341,17 +347,6 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
             </Callout>
           ) : null}
 
-          <p className="prose small">
-            Chromium signs in for you against{' '}
-            <span className="mono break">{activeEnv?.loginUrl}</span> — this org's own login page,
-            not the generic sandbox one, which is the only page that offers the SSO button. It runs
-            out of sight; if a verification code is needed you are asked for it here, and a window
-            only opens if it meets a step it cannot drive.
-            {sf?.rememberedBrowser
-              ? ' This browser is already remembered, so MFA may be skipped.'
-              : ' After this, the session renews itself and you should not be asked again.'}
-          </p>
-
           <div style={{ margin: '0.9rem 0' }}>
             <Segmented
               label="Login method"
@@ -369,8 +364,20 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
             />
           </div>
 
-          {method === 'sso' ? (
-            <>
+          {/* One disclosure for the whole card: the mechanism, then whichever method is selected.
+              Three separate toggles in one panel is the noise this replaced. */}
+          <Explainer>
+            <p className="prose small">
+              Chromium signs in for you against{' '}
+              <span className="mono break">{activeEnv?.loginUrl}</span> — this org's own login page,
+              not the generic sandbox one, which is the only page that offers the SSO button. It runs
+              out of sight; if a verification code is needed you are asked for it here, and a window
+              only opens if it meets a step it cannot drive.
+              {sf?.rememberedBrowser
+                ? ' This browser is already remembered, so MFA may be skipped.'
+                : ' After this, the session renews itself and you should not be asked again.'}
+            </p>
+            {method === 'sso' ? (
               <p className="prose small">
                 The longer route: it clicks the SSO button and follows the redirect out to Microsoft
                 Entra, which is several more steps than signing in to Salesforce directly. Kept for
@@ -378,6 +385,18 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                 Microsoft form driven in the background too — leave it blank and a window opens for
                 you to sign in yourself, since there is nothing to hand over otherwise.
               </p>
+            ) : (
+              <p className="prose small">
+                Driven end to end in the background and stays inside Salesforce — no Microsoft
+                redirect, no window. It stops at one place only: when Salesforce asks to verify your
+                identity, the code box below activates — read the code off your authenticator app,
+                mail or phone and enter it here.
+              </p>
+            )}
+          </Explainer>
+
+          {method === 'sso' ? (
+            <>
               <div className="field-stack">
                 <Field label="Netradyne account" hint="Optional — leave blank to sign in yourself">
                   <input
@@ -391,7 +410,7 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                 </Field>
                 <Field
                   label="Password"
-                  hint="Optional. Held in memory for this login only, never written to disk. A wrong one is reported and not retried, so it cannot lock your account."
+                  hint="Optional"
                 >
                   <input
                     type="password"
@@ -405,12 +424,6 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
             </>
           ) : (
             <>
-              <p className="prose small">
-                Driven end to end in the background and stays inside Salesforce — no Microsoft
-                redirect, no window. It stops at one place only: when Salesforce asks to verify your
-                identity, the code box below activates — read the code off your mail or phone and
-                enter it here.
-              </p>
               <div className="field-stack">
                 <Field label="Salesforce username">
                   <input
@@ -422,7 +435,7 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                     placeholder="you@netradyne.com.testing"
                   />
                 </Field>
-                <Field label="Password" hint="Held in memory for this login only. Never written to disk.">
+                <Field label="Password">
                   <input
                     type="password"
                     autoComplete="off"
@@ -505,8 +518,15 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
                 >
                   <div className="small">{attempt.message}</div>
                   {attempt.currentUrl ? (
-                    <div className="mono small muted break" style={{ marginTop: '0.4rem' }}>
-                      {attempt.currentUrl}
+                    // Path only. Salesforce's verification URLs carry a ~1,200-character CSRF
+                    // token, and printing it whole buried the button underneath a wall of hex.
+                    // The full value stays in the title, so it is still copyable.
+                    <div
+                      className="mono small muted break"
+                      style={{ marginTop: '0.4rem' }}
+                      title={attempt.currentUrl}
+                    >
+                      {shortUrl(attempt.currentUrl)}
                     </div>
                   ) : null}
                   {attempt.canReveal ? (
@@ -547,7 +567,7 @@ function SalesforceCard({ env, activeEnv, session, refreshSession, onError }) {
             <div style={{ marginTop: '0.9rem' }}>
               <Field
                 label="sid cookie"
-                hint="From devtools › Application › Cookies on the *.my.salesforce.com host. A Lightning-domain sid will not work as a Bearer token."
+                hint="devtools › Application › Cookies, on the *.my.salesforce.com host"
               >
                 <input
                   className="mono"
@@ -609,21 +629,27 @@ function SmtpCard({ env, session, refreshSession, onError }) {
     const signedIn = smtp.outlook?.signedIn;
     return (
       <Sheet
-        eyebrow="The only way the org changes"
         title="Mail"
         actions={signedIn ? <Badge tone="ok">Outlook signed in</Badge> : <Badge tone="warn">sign-in needed</Badge>}
       >
-        <p className="prose small">
-          SMTP is unusable in this tenant — it answers <code>535 5.7.139</code>, Microsoft's code for
-          SMTP AUTH being switched off. No app password gets past that, so mail goes out through
-          Outlook on the web.
-        </p>
-        <p className="prose small">
-          Sign in once in a visible window; the session is saved to{' '}
-          <code>data/outlook-auth.json</code> (mode 0600) and later sends run headless against it.
-          Nothing is typed for you — the provider is Microsoft Entra and this app does not handle
-          those credentials.
-        </p>
+        <Explainer>
+          <p className="prose small">
+            SMTP is unusable in this tenant — it answers <code>535 5.7.139</code>, Microsoft's code for
+            SMTP AUTH being switched off. No app password gets past that, so mail goes out through
+            Outlook on the web.
+          </p>
+          <p className="prose small">
+            Sign in once in a visible window; the session is saved to{' '}
+            <code>data/outlook-auth.json</code> (mode 0600) and later sends run headless against it.
+            Nothing is typed for you — the provider is Microsoft Entra and this app does not handle
+            those credentials.
+          </p>
+          <p className="prose small">
+            A closed compose window looks the same whether the mail was sent or discarded, so a send is
+            only recorded once the message is found in Sent Items. Transport and auto-send live in{' '}
+            <code>config/environments.json</code> under <code>mail</code>.
+          </p>
+        </Explainer>
 
         <KeyValue
           rows={[
@@ -714,26 +740,22 @@ function SmtpCard({ env, session, refreshSession, onError }) {
           ) : null}
         </div>
 
-        <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
-          A closed compose window looks the same whether the mail was sent or discarded, so a send is
-          only recorded once the message is found in Sent Items. Transport and auto-send live in{' '}
-          <code>config/environments.json</code> under <code>mail</code>.
-        </p>
       </Sheet>
     );
   }
 
   return (
     <Sheet
-      eyebrow="The only way the org changes"
       title="Mail"
       actions={smtp?.configured ? <Badge tone="ok">configured</Badge> : <Badge tone="muted">not configured</Badge>}
     >
-      <p className="prose small">
-        Sent over SMTP via <code>{smtp?.host}:{smtp?.port}</code>. After each send the app looks
-        for the message in Sent Items — a transport that accepted a message is not proof it
-        left the building.
-      </p>
+      <Explainer>
+        <p className="prose small">
+          Sent over SMTP via <code>{smtp?.host}:{smtp?.port}</code>. After each send the app looks
+          for the message in Sent Items — a transport that accepted a message is not proof it
+          left the building.
+        </p>
+      </Explainer>
 
       {smtp?.configured ? (
         <>
@@ -778,4 +800,20 @@ function SmtpCard({ env, session, refreshSession, onError }) {
       )}
     </Sheet>
   );
+}
+
+/**
+ * The readable part of a Salesforce URL: host plus path, query dropped.
+ *
+ * Its verification pages hang a ~1,200-character CSRF token off the query string. Shown whole it
+ * is several screens of hex that says nothing — the path (`…/verification/method/TotpVerificationUi`)
+ * is the part that actually tells you which step you are on.
+ */
+function shortUrl(url) {
+  try {
+    const { host, pathname } = new URL(url);
+    return `${host}${pathname}`;
+  } catch {
+    return url.length > 120 ? `${url.slice(0, 120)}…` : url;
+  }
 }

@@ -134,12 +134,40 @@ export async function verifyConnection(env) {
  * Serialized product catalog. Product_Serialized__c = 'Yes' is what decides whether a line
  * needs device serials — not the family, not the name (spec section 8).
  */
-export async function fetchSerializedCatalog(env) {
+/**
+ * The `OR Product_Series__c IN (…)` half of the catalog query, or nothing.
+ *
+ * These values come from `config/profiles.json`, not from a request, but they are still
+ * interpolated into SOQL — so anything that could terminate the literal is dropped rather than
+ * escaped. A series name is a short identifier like `HAPTIC` or `D810`; a value carrying a quote
+ * or a backslash is a mistake in the config, and silently ignoring it is safer than shipping it
+ * to the query planner.
+ */
+function seriesClause(series) {
+  const safe = (Array.isArray(series) ? series : [])
+    .map((s) => String(s).trim())
+    .filter((s) => s && /^[\w .+-]+$/.test(s));
+  if (!safe.length) return '';
+  return ` OR Product_Series__c IN ('${safe.join("','")}')`;
+}
+
+export async function fetchSerializedCatalog(env, { includeSeries = [] } = {}) {
   const records = await query(
     env,
-    `SELECT Id, ProductCode, Product_SKU__c, Name, Device_Type__c, IDMS_Device_Type__c, Family
+    // Product_Series__c is the org's "L3 Product Series" and is what the picker's family filter
+    // keys on — it is the only field that names a product line exactly (DHUB, DMS, VBUS, D810,
+    // HAPTIC, and the D-series). Device_Type__c is too coarse: every Driveri model *and* Octo
+    // share `Driveri`.
+    //
+    // The serialized flag is the right gate for almost everything, but not all of it: Haptic's
+    // only product is flagged `Product_Serialized__c = 'No'` in the org while this app mints
+    // serials for it and loads it through a verified sheet. `includeSeries` reopens the gate for
+    // exactly the series a family rule names, rather than dropping the filter and pulling in 555
+    // products no template can load.
+    `SELECT Id, ProductCode, Product_SKU__c, Name, Device_Type__c, IDMS_Device_Type__c, Family,
+            Product_Serialized__c, Product_Series__c, Product_Category__c, L1_Product_Family__c
        FROM Product2
-      WHERE IsActive = true AND Product_Serialized__c = 'Yes'
+      WHERE IsActive = true AND (Product_Serialized__c = 'Yes'${seriesClause(includeSeries)})
       ORDER BY ProductCode`
   );
   return records.map((p) => ({
@@ -150,6 +178,15 @@ export async function fetchSerializedCatalog(env) {
     deviceType: p.Device_Type__c,
     idmsDeviceType: p.IDMS_Device_Type__c,
     family: p.Family,
+    // "L3 Product Series" / "L2 Product Category" / "L1 Product Family" in the org's own
+    // hierarchy. The series is what the picker filters families on.
+    productSeries: p.Product_Series__c,
+    productCategory: p.Product_Category__c,
+    l1Family: p.L1_Product_Family__c,
+    // Whether the org itself considers this serialized. Not always true of rows the picker shows —
+    // Haptic's module says No while its sheet loads generated serials — so it is reported rather
+    // than assumed.
+    serialized: p.Product_Serialized__c === 'Yes',
     // Family = 'Hardware' is the device population; everything else serialized is treated
     // as an accessory by the picker.
     kind: p.Family === 'Hardware' ? 'device' : 'accessory',
@@ -301,41 +338,75 @@ export async function fetchRecentOrders(env, { limit = 25 } = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Which of these candidate ids are already taken?
+ * Every Asset field a minted id can land in.
  *
- * Asset.Name IS the device_id — that is the join key for everything (spec section 6) — but a
- * Driveri run mints device_id, sim_serial and device_imei from three series offset by 10, so
- * a value colliding with somebody else's SIM_Serial__c is just as unusable as one colliding
- * with a Name. All three fields are checked.
+ * A candidate is unusable if it collides in *any* of them, so this list is the whole of what the
+ * allocator can see — a series whose values land somewhere absent here is allocated blind.
+ *
+ *   Name            device_id, driveri_hub_id, serial_number — the join key for everything
+ *   SIM_Serial__c   sim_serial
+ *   Device_IMEI__c  device_imei
+ *   Wifi_Mac__c     mac_id
+ *
+ * `Wifi_Mac__c` was missing until 2026-08-15 and a real VBUS load was rejected for it: the org
+ * already held `Wifi_Mac__c = 1100928221` on a device loaded in May, the check never asked about
+ * that field, and the run minted the same mac again. The tell was the two series moving
+ * differently — the serial advanced past its collision because it lives in `Name`, which *was*
+ * checked, while the mac stayed on its start value.
+ *
+ * Octo's `wired_speaker_serial` and `native_cam_serial` become Assets in their own right, so they
+ * are covered by `Name`. `server/services/collision-fields.test.js` fails if a new series appears
+ * with no field mapped to it.
+ */
+export const COLLISION_FIELDS = ['Name', 'SIM_Serial__c', 'Device_IMEI__c', 'Wifi_Mac__c'];
+
+/**
+ * How many candidates to ask about per query.
+ *
+ * One `OR <field> IN (…)` clause per collision field, so the URL grows with the field list — this
+ * is derived rather than a constant so that widening the list cannot quietly push the request past
+ * Salesforce's ~8 KB URL limit.
+ */
+export function collisionChunkSize() {
+  return Math.max(25, Math.floor(300 / COLLISION_FIELDS.length));
+}
+
+/**
+ * The taken values in a query result.
  *
  * Only values that were actually asked about come back. A matched Asset also carries its own
- * SIM_Serial__c and Device_IMEI__c, and reporting those as "taken" told the allocator to step
- * over ids nobody had claimed.
+ * SIM_Serial__c, Device_IMEI__c and Wifi_Mac__c, and reporting those as "taken" told the allocator
+ * to step over ids nobody had claimed.
  */
+export function takenFromRecords(records, askedIds) {
+  const asked = new Set((askedIds ?? []).map(String));
+  const taken = new Set();
+  for (const record of records ?? []) {
+    for (const field of COLLISION_FIELDS) {
+      const value = record?.[field];
+      if (value && asked.has(String(value))) taken.add(String(value));
+    }
+  }
+  return [...taken];
+}
+
+/** Which of these candidate ids are already taken? */
 export async function findTakenDeviceIds(env, candidateIds) {
   const ids = [...new Set(candidateIds.map(String))].filter(Boolean);
   if (!ids.length) return [];
 
-  const asked = new Set(ids);
   const taken = new Set();
-  // 3 OR clauses per query; keep URL under Salesforce's ~8 KB limit
-  const CHUNK = 100;
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK);
+  const chunkSize = collisionChunkSize();
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
     const inList = soqlInList(chunk);
     const records = await query(
       env,
-      `SELECT Name, SIM_Serial__c, Device_IMEI__c
+      `SELECT ${COLLISION_FIELDS.join(', ')}
          FROM Asset
-        WHERE Name IN (${inList})
-           OR SIM_Serial__c IN (${inList})
-           OR Device_IMEI__c IN (${inList})`
+        WHERE ${COLLISION_FIELDS.map((f) => `${f} IN (${inList})`).join('\n           OR ')}`
     );
-    for (const r of records) {
-      for (const value of [r.Name, r.SIM_Serial__c, r.Device_IMEI__c]) {
-        if (value && asked.has(String(value))) taken.add(String(value));
-      }
-    }
+    for (const value of takenFromRecords(records, chunk)) taken.add(value);
   }
   return [...taken];
 }

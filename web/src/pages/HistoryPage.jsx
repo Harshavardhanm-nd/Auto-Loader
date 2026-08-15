@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, PageHead, Sheet } from '../components/ui.jsx';
+import { Badge, Explainer, PageHead, Sheet } from '../components/ui.jsx';
 
 /**
  * Run history for the environment you are in. Device ids that were emailed exist in the org
@@ -30,11 +30,13 @@ export default function HistoryPage({ env, activeEnv, setRunId, goto, onError })
   return (
     <>
       <PageHead eyebrow="Record" title="History">
-        <p>
-          Every run in <strong>{envLabel}</strong>, with the device ids it loaded. Switch
-          environment in the rail to see the other org's record. Deleting here removes this app's
-          copy only — whatever was emailed stays in Salesforce.
-        </p>
+        <Explainer>
+          <p>
+            Every run in <strong>{envLabel}</strong>, with the device ids it loaded. Switch
+            environment in the rail to see the other org's record. Deleting here removes this app's
+            copy only — whatever was emailed stays in Salesforce.
+          </p>
+        </Explainer>
       </PageHead>
 
       {runs === null ? (

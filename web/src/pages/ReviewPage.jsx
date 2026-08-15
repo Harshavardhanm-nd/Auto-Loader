@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, PageHead, Segmented, Sheet } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, PageHead, Segmented, Sheet } from '../components/ui.jsx';
 
 /**
  * Review & send.
@@ -160,17 +160,19 @@ export default function ReviewPage({
   return (
     <>
       <PageHead eyebrow="Step 05 · Dispatch" title="Review & send">
-        <p>
-          One file per family, one email each — every send carries exactly one attachment. Tracking
-          id <span className="mono">{run.trackingId}</span>
-          {run.order ? (
-            <>
-              {' '}
-              · order <span className="mono">{run.order.orderNumber}</span>
-            </>
-          ) : null}
-          .
-        </p>
+        <Explainer>
+          <p>
+            One file per family, one email each — every send carries exactly one attachment. Tracking
+            id <span className="mono">{run.trackingId}</span>
+            {run.order ? (
+              <>
+                {' '}
+                · order <span className="mono">{run.order.orderNumber}</span>
+              </>
+            ) : null}
+            .
+          </p>
+        </Explainer>
       </PageHead>
 
       <Sheet

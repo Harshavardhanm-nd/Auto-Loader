@@ -51,9 +51,57 @@
   },
   "orderStatus": {
     "$comment": "Spec section 9 traps 1 and 2. 'Confirmed' and bare 'Shipped' do not exist in this org.",
-    "completeStatuses": ["Activated"],
-    "acceptOnReadOnly": ["Ordered", "Delivered"],
-    "neverWrite": ["Confirmed", "Shipped", "Ordered", "Delivered"],
-    "blockedStatuses": ["Partially Shipped"]
+    "completeStatuses": [
+      "Activated"
+    ],
+    "acceptOnReadOnly": [
+      "Ordered",
+      "Delivered"
+    ],
+    "neverWrite": [
+      "Confirmed",
+      "Shipped",
+      "Ordered",
+      "Delivered"
+    ],
+    "blockedStatuses": [
+      "Partially Shipped"
+    ]
+  },
+  "catalogFilters": {
+    "$comment": "Which serialized-catalog rows the Families & SKUs picker shows for each family, keyed on Product_Series__c — the org's \"L3 Product Series\". That field is the only one naming a product line exactly; Device_Type__c calls every Driveri model AND Octo \"Driveri\". Driveri is declared as every L1 Device except the D810 series rather than a list of its seven current series, so a new D-series model appears without a config edit while staying disjoint from Octo. HAPTIC is a real active series in the org with no serialized product carrying it — the rule is declared anyway, so the picker can say the org has none rather than that nobody configured it. Verified against testing 2026-08-15: driveri 135, octo 2, dhub 2, dms 2, vbus 3, haptic 0, of 169.",
+    "driveri": {
+      "l1Family": [
+        "Device"
+      ],
+      "excludeSeries": [
+        "D810"
+      ]
+    },
+    "octo": {
+      "series": [
+        "D810"
+      ]
+    },
+    "dhub": {
+      "series": [
+        "DHUB"
+      ]
+    },
+    "dms": {
+      "series": [
+        "DMS"
+      ]
+    },
+    "vbus": {
+      "series": [
+        "VBUS"
+      ]
+    },
+    "haptic": {
+      "series": [
+        "HAPTIC"
+      ]
+    }
   }
 }
