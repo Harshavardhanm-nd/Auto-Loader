@@ -117,7 +117,7 @@ first) and so never reaches `received-load`, which uses `{family}` legitimately.
 
 **Only 3 of the 19 descriptors now have complete byte-level verification** — `haptic-data-update`,
 `order-load` and `partner-order-load`. It was 4 of 16; `received-load` lost its round-trip test to
-bucket 4. **Treat any change to `csv-builder.js` or a descriptor as unverified**, and prefer fixing
+bucket 3. **Treat any change to `csv-builder.js` or a descriptor as unverified**, and prefer fixing
 `rowsFromSamples` first — one helper restores coverage on ten descriptors at once.
 
 Also check for `skipped` in the summary: on a machine without the sheet folder the whole suite
@@ -343,7 +343,7 @@ operation is not adjacent to the ordinary ones.
 ### Everything format-specific lives in `templates/*.json`
 
 19 descriptors, nominally one per real accepted sheet — though seven now name a sheet that is not
-in the folder, so read "Test state" bucket 3 before trusting one. A descriptor owns the column list
+in the folder, so read "Test state" bucket 2 before trusting one. A descriptor owns the column list
 and order, each column's value `source`, the byte contract (`bom`, `lineEnding`, `trailingNewline`),
 the filename pattern, and the id series it mints. `csv-builder.js` has no knowledge of any
 particular format; `validator.js` checks against the descriptor's own declared contract, not a
