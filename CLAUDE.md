@@ -12,24 +12,27 @@ Salesforce is **read-only** here (`server/services/sf-client.js` has no writes).
 anything changes in the org is an email with a CSV attached — which is why the destination mailbox
 and the CSV bytes are the two things the code guards hardest.
 
-## Read this first: the suite is red and three guards are off
+## Read this first: the suite is red and two guards are off
 
 This file was accurate at `e5c790d`. Five merges landed after it (the Octo, RMA Returned and DEAD
 work, `b78af52`…`20912a9`) without updating the tests or the docs, and the sections below have been
-re-checked against `20912a9`. Three of the app's own safety mechanisms are currently not doing their
-job. None of them will announce itself, so know about them before you change anything nearby:
+re-checked against `20912a9`. Two of the app's own safety mechanisms are currently not doing their
+job. Neither will announce itself, so know about them before you change anything nearby:
 
-1. **`operationChain()` is truncated to `[initialLoad, dataUpdate]`** by a self-loop added to
-   `config/lifecycle.json`, so the ahead/behind reasoning that stops a device being reported as
-   loaded is disabled for `shipmentUpdate` and `received`. Fails conservatively today, but only
-   because a numeric fallback happens to cover it. See "Known defect" under the life cycle section.
-2. **16 of 19 templates have no byte-level verification** — seven point at source sheets that do not
+1. **16 of 19 templates have no byte-level verification** — seven point at source sheets that do not
    exist, ten fail on a stale test helper. Any change to `csv-builder.js` or a descriptor is
    unverified. See "Test state".
-3. **`faultyReturned` and `rmaReturned` route to the identical testing mailbox**, and no test catches
+2. **`faultyReturned` and `rmaReturned` route to the identical testing mailbox**, and no test catches
    it because the assertion that would throws earlier. See "Routing".
 
-The counts in this file (19 descriptors, 27 transitions, 153 tests) are what the repo actually holds;
+A third guard was on this list too: the ahead/behind reasoning that stops a device being reported as
+loaded before an operation has actually reached it. A `dataUpdate` self-loop in
+`config/lifecycle.json` truncated `operationChain()` to `[initialLoad, dataUpdate]`, silently
+disabling that reasoning for `shipmentUpdate` and `received`. **Fixed 2026-08-15** by moving
+`dataUpdate` into `stageSteps` and adding `pollingOrder()` — see "The device life cycle lives in
+`config/lifecycle.json`" below for where the model lives now.
+
+The counts in this file (19 descriptors, 26 transitions, 193 tests) are what the repo actually holds;
 `README.md` and `templates/README.md` still describe 13 templates and are not reliable on numbers.
 
 ## Commands
@@ -38,33 +41,39 @@ The counts in this file (19 descriptors, 27 transitions, 153 tests) are what the
 npm install                  # deps + the Chromium that drives the Salesforce/Outlook logins
 npm run dev                  # server :4317 (node --watch) + Vite UI :5317 (proxies /api), opens browser
 npm run dev:server           # server only
-npm test                     # 153 tests in 3 files — see "Test state" below, 45 currently fail
+npm test                     # 193 tests in 8 files — see "Test state" below, 39 currently fail
 npm run build && npm start   # single-process production mode on :4317 (Express serves dist/)
 ```
 
 Single test file / single test:
 
 ```bash
-node --test server/lib/config.test.js          # 18 tests, 12 pass / 6 fail — DL routing, mailbox confusability
-node --test server/lib/lifecycle.test.js       # 51 tests, 45 pass / 6 fail — stage graph, classify, next-step
-node --test server/services/templates.test.js  # 84 tests, 51 pass / 33 fail
+node --test server/lib/config.test.js                # 18 tests, 12 pass / 6 fail — DL routing, mailbox confusability
+node --test server/lib/lifecycle.test.js              # 51 tests, 51 pass / 0 fail — stage graph, classify, next-step
+node --test server/lib/stage-steps.test.js            # 10 tests, 10 pass / 0 fail — operationChain, pollingOrder, requiredStepsBefore
+node --test server/lib/stage-steps-shape.test.js      # 2 tests, 2 pass / 0 fail — stageSteps shape guard
+node --test server/services/templates.test.js         # 84 tests, 51 pass / 33 fail
+node --test server/services/catalog-filter.test.js    # 16 tests, 16 pass / 0 fail — family/series picker rules
+node --test server/services/collision-fields.test.js  # 8 tests, 8 pass / 0 fail — every minted series has a mapped collision field
+node --test server/services/position.test.js          # 4 tests, 4 pass / 0 fail — ahead/behind/at against pollingOrder
 node --test --test-name-pattern "byte contract" server/services/templates.test.js
 ```
 
 Node's runner prints its tallies with an `ℹ` prefix (`ℹ tests 69`), not TAP `#`, so grep for `ℹ`.
 
-### Test state — 45 failures are pre-existing, not yours. But six of them are a real bug.
+### Test state — 39 failures are pre-existing, not yours
 
-**All three test files currently fail.** The suite was last green at `e5c790d`; the five merges
-after it (`b78af52`…`20912a9`, the Octo/RMA/DEAD work) broke it and the tests were not updated.
-Before debugging a failure, place it in one of these four buckets:
+**Two of the eight test files currently fail: `config.test.js` and `templates.test.js`.**
+`lifecycle.test.js`, `stage-steps.test.js`, `stage-steps-shape.test.js`, `catalog-filter.test.js`,
+`collision-fields.test.js` and `position.test.js` are green. The suite was last green as a whole at
+`e5c790d`; the five merges after it (`b78af52`…`20912a9`, the Octo/RMA/DEAD work) broke it and the
+tests were not updated. `lifecycle.test.js`'s 6 failures were the one exception: they were reporting
+a real app defect, not a stale assertion, until the stage-step work fixed it on 2026-08-15 — see
+"The device life cycle lives in `config/lifecycle.json`" below for where `operationChain()`,
+`pollingOrder()` and `stageSteps` now live. Before debugging a failure, place it in one of these
+three buckets:
 
-**1. `lifecycle.test.js` — 6 failures. This is a live defect, not stale tests.** See
-"The `dataUpdate` self-loop truncates the operation chain" below. Do not "fix" these by editing
-the assertions; they are correctly reporting that `operationChain()` no longer reaches
-`shipmentUpdate` or `received`.
-
-**2. `config.test.js` — 6 failures, all expected consequences of deliberate routing changes.**
+**1. `config.test.js` — 6 failures, all expected consequences of deliberate routing changes.**
 The tests encode the old routing table and nobody updated them:
 - `dataUpdate` was given initialLoad's mailbox in both environments (it was `REPLACE_ME` before),
   so the "no two operations share an address" and "placeholder blocks only its own pipeline"
@@ -76,7 +85,7 @@ The tests encode the old routing table and nobody updated them:
   `[faultyReturned, nonRepairable, undoDead, updateLoad]` — `deviceDead` gained `device-dead.json`,
   `updateLoad` lost its sheet.
 
-**3. `templates.test.js` — 16 failures: seven descriptors point at source sheets that do not
+**2. `templates.test.js` — 16 failures: seven descriptors point at source sheets that do not
 exist.** It regenerates each real DL sheet from its descriptor and asserts byte equality, reading
 from `~/BSG/DL Template` (override with `DL_TEMPLATE_DIR`). The folder holds 15 sheets. These
 `sourceTemplate` values are not among them, so header + bytes hard-fail with ENOENT:
@@ -97,7 +106,7 @@ declares **no `sourceTemplate` at all** yet carries `status: "verified"` — it 
 against a real sheet, so "verified" overstates it. The skip guard is **folder-level only**: a
 missing individual sheet is not skipped.
 
-**4. `templates.test.js` — the remaining failures: the harness never caught up with `line.sku`.**
+**3. `templates.test.js` — the remaining failures: the harness never caught up with `line.sku`.**
 `rowsFromSamples` (line 39) builds rows as `{ generated, line: {} }`, but 14 descriptors read
 `sku_number` from `line.sku`. Every round-trip and builder test using that helper throws
 `Template column "sku_number": line.sku is not available`. Production is unaffected —
@@ -113,7 +122,7 @@ bucket 4. **Treat any change to `csv-builder.js` or a descriptor as unverified**
 
 Also check for `skipped` in the summary: on a machine without the sheet folder the whole suite
 self-skips and reports green. Node counts `describe` blocks alongside tests in its `✖` list, so the
-failing-name list looks longer than 45.
+failing-name list looks longer than 39.
 
 ## Architecture
 
@@ -565,6 +574,10 @@ offered wrongly is an email that has already gone.
 `row.accessories` present and at a `_SYNC_SUCCESS`. Per device, not per run: the batch's successes
 still move on, which is the same rule a partially-failed load has always followed. A device with no
 accessories recorded has nothing to wait on; absence of a record is not evidence of an unsynced part.
+The enrichment that populates `row.accessories` is itself gated on the run containing an Octo group
+at all — `isOctoRun` in `runs.js`, true the moment any group is Octo, not only when every group is.
+A run with no Octo group never carries accessories, and the completeness check is vacuously true
+there, which is correct: there is nothing on those devices to wait on.
 
 That accessory data is fetched after the stage split has already run, and has to be threaded through
 it by hand. `GET /:runId/poll/:stage` (`runs.js:1046`) calls `scopeSnapshot()` first, which runs
