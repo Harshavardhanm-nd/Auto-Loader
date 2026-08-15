@@ -188,6 +188,37 @@ export function operationChain() {
 }
 
 /**
+ * The order operations are compared in when deciding whether a device is ahead of, at, or behind
+ * the stage being watched.
+ *
+ * `operationChain()` is the movement chain and deliberately excludes anything that does not move a
+ * device. But a device carrying `DATA_UPDATE_SYNC_SUCCESS` *is* somewhere — between initial load
+ * and shipment update — and leaving it out of the order makes `positionInChain` answer "unknown",
+ * which is then treated as not-done. So stage steps are spliced back in at the operation they
+ * precede.
+ *
+ * No family is involved. Position depends on which operation last wrote the sync status, and a
+ * family with no data-update sheet never produces that status, so one shared order is correct for
+ * every family and inert where a family cannot reach the step.
+ */
+export function pollingOrder() {
+  const model = loadLifecycle();
+  if (!model.pollingOrderCache) {
+    const order = [...operationChain()];
+    for (const step of model.stageSteps) {
+      if (order.includes(step.operation)) continue;
+      const at = order.indexOf(step.before);
+      // An unknown `before` appends rather than throwing: a step nobody can order is still better
+      // placed at the end than dropped, and dropping it is what causes the silent misreads above.
+      if (at === -1) order.push(step.operation);
+      else order.splice(at, 0, step.operation);
+    }
+    model.pollingOrderCache = order;
+  }
+  return model.pollingOrderCache;
+}
+
+/**
  * Which operation wrote a given `Sync_Status__c` base, e.g. SHIPMENT_UPDATE → shipmentUpdate.
  * The `$comment` entry in the map holds an array, so only string values are real.
  */
