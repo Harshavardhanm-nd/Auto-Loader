@@ -19,7 +19,7 @@ import {
   loadLifecycle,
   classifyStage,
   operationMovement,
-  operationChain,
+  pollingOrder,
   operationForSyncBase,
   summariseStages,
 } from '../lib/lifecycle.js';
@@ -683,7 +683,9 @@ export function splitByStagePosition(summary) {
  * as not-ahead, which is the cautious reading — it can under-report a success, never invent one.
  */
 function positionInChain(stage, syncStatus) {
-  const chain = operationChain();
+  // The polling order, not the movement chain: a device that has only had its data update is
+  // somewhere real, and comparing against a chain that omits that step reads it as "unknown".
+  const chain = pollingOrder();
   const watched = chain.indexOf(stage);
   if (watched === -1) return 'unknown';
 
