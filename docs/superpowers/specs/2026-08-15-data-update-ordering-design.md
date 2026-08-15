@@ -69,18 +69,29 @@ Rejected alternatives:
 
 ### 2. Two chains, not one
 
+> **Revised during planning.** This section originally proposed `chainForFamily(family)` and
+> threading a `deviceId → family` lookup through `summarisePolling` and `rescoreSnapshot`. That is
+> unnecessary, and the simpler form is also the safer one — see the note below.
+
 | Function | Returns | Purpose |
 |---|---|---|
-| `operationChain()` | `[initialLoad, shipmentUpdate, received]` | the movement chain, derived from `transitions` alone — **restored by removing the self-loop** |
-| `chainForFamily(family)` | splices stage steps in at `at`, before `before` | the chain a given family actually walks |
+| `operationChain()` | `[initialLoad, shipmentUpdate, received]` | the movement chain, derived from `transitions` alone — **restored by removing the self-loop**. Unchanged semantics; the tests assert it excludes `dataUpdate`. |
+| `pollingOrder()` | `[initialLoad, dataUpdate, shipmentUpdate, received]` | the movement chain with stage steps spliced in at `before`. The order positions are compared in. |
 
-So `chainForFamily('octo')` is `[initialLoad, dataUpdate, shipmentUpdate, received]`, and every
-other family gets `[initialLoad, shipmentUpdate, received]`.
+`positionInChain` switches from `operationChain()` to `pollingOrder()`. It is the sole production
+consumer of the former (`sf-client.js:686`), so the blast radius is one line.
 
-`positionInChain(stage, syncStatus, family)` uses the family-aware chain. This is the highest-
-consequence change in the design: that function decides whether a device counts as loaded. An
-unknown position must continue to be treated as **not ahead** — it may under-report a success, never
-invent one.
+**Why no family is needed.** A device's position depends on which operation last wrote its sync
+status, not on its family. `DATA_UPDATE_SYNC_SUCCESS` sits between initial load and shipment update
+for *any* device carrying it, and a family with no data-update sheet never produces that status —
+so including the step in one shared order is correct for every family, and inert where the family
+cannot reach it. Family matters only for **blocking** (section 4), never for position.
+
+This matters because `positionInChain` decides whether a device counts as loaded — the
+highest-consequence logic in the app. Threading a per-device family lookup through
+`summarisePolling` and `rescoreSnapshot` to reach it would have been the riskiest part of this
+change, and it buys nothing. An unknown position must continue to be treated as **not ahead**: it
+may under-report a success, never invent one.
 
 ### 3. Which families can run a data update
 
@@ -123,26 +134,16 @@ A held-back device must be **named, with the accessory that blocked it**. "4 of 
 explanation reads as a bug; "device 1250730291 — Wired Speaker 330099291 not synced" reads as a
 decision.
 
-### 6. Getting the family to where the decision is made
+### 6. Where the family *is* needed
 
-`positionInChain` needs the device's family, and neither of its callers currently has one:
+Only for the block in section 4, and only in the UI layer, which already knows each group's family.
 
-```
-summarisePolling(stage, deviceIds, assets)        <- poller.js:76
-rescoreSnapshot(stage, snapshot)                  <- runs.js:1142
-```
+`summarisePolling(stage, deviceIds, assets)` and `rescoreSnapshot(stage, snapshot)` keep their
+current signatures. No `familyOf` plumbing — see the revision note in section 2.
 
-A run can hold several families, and the chain differs per family, so this must be **per device,
-not per run**. Both functions take an added `familyOf` argument — a `deviceId → family` lookup built
-by the caller from `run.groups[].lines[].generatedRows` (the same walk `runDeviceIds` already does).
-
-`rescoreSnapshot` re-derives interpretation at read time, so the lookup must be rebuilt there too
-rather than stamped into the snapshot — a snapshot is written once and read many times, and freezing
-a family judgement into it would repeat the mistake `rescoreSnapshot` exists to avoid.
-
-When the family is unknown (a device not found in any group, or a snapshot predating this change),
-fall back to `operationChain()` — the movement chain. That can only under-report a position, never
-invent one, which is the direction this code must always fail in.
+The block is decided per **group**, not per run. Today's `isOctoRun` test is
+`groups.every(g => g.family === 'octo')`, which reads a mixed-family run as non-Octo and would skip
+the block for its Octo devices.
 
 ### 7. What "synced" means for an accessory
 
