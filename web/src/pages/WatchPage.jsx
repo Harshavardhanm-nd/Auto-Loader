@@ -50,6 +50,9 @@ export default function WatchPage({
   // Why the automatic top-up did not land, shown inline beside the snapshot's age. Never a banner —
   // see the activation effect below.
   const [refreshError, setRefreshError] = React.useState(null);
+  const [orderProcessingCsv, setOrderProcessingCsv] = React.useState(null);
+  const [showCsvPreview, setShowCsvPreview] = React.useState(false);
+  const [csvFilename, setCsvFilename] = React.useState('');
   const isViewTab = ASSET_VIEW_TAB_IDS.has(stage);
 
   React.useEffect(() => {
@@ -305,12 +308,19 @@ export default function WatchPage({
     (r) => stage === 'rmaReturned' && Number(r.idmsStatus) === 7
   );
 
+  // Rows on the received tab that have synced — used for the order-processing CSV only.
+  const receivedSyncedRows = (snapshot?.rows ?? []).filter(
+    (r) => stage === 'received' && r.syncStatus === 'DEVICE_RECEIVED_AT_3PL_SYNC_SUCCESS'
+  );
+
   const eligibleRows =
     shipmentEligibleRows.length > 0
       ? shipmentEligibleRows
       : receivedEligibleRows.length > 0
       ? receivedEligibleRows
-      : deadEligibleRows;
+      : deadEligibleRows.length > 0
+      ? deadEligibleRows
+      : receivedSyncedRows;
 
 
   const toggleSelect = (deviceId) => {
@@ -474,6 +484,32 @@ export default function WatchPage({
     }
   };
 
+  const buildOrderProcessingCsv = (deviceIds) => {
+    const deviceSkuMap = new Map();
+    for (const group of run.groups) {
+      for (const line of group.lines) {
+        for (const generated of (line.generatedRows ?? [])) {
+          const id = generated[group.primarySeries];
+          if (id != null) deviceSkuMap.set(String(id), line.sku);
+        }
+      }
+    }
+    const csvRows = deviceIds.map((id) => {
+      const sku = deviceSkuMap.get(String(id)) ?? '';
+      return `${sku},${id}`;
+    });
+    return `SKU,Serial_Number\r\n${csvRows.join('\r\n')}`;
+  };
+
+  const generateOrderProcessingCsv = () => {
+    const content = buildOrderProcessingCsv([...selected]);
+    const trackingId = run.setup?.trackingId ?? runId;
+    const base = csvFilename.trim() || `Order_Processing_${trackingId}`;
+    const filename = base.endsWith('.csv') ? base : `${base}.csv`;
+    setOrderProcessingCsv({ content, filename });
+    setShowCsvPreview(false);
+  };
+
   const act = async (fn, key) => {
     setBusy(key);
     try {
@@ -541,7 +577,7 @@ export default function WatchPage({
         <Segmented
           label="Stage"
           value={stage}
-          onChange={(v) => { setStage(v); setSelected(new Set()); }}
+          onChange={(v) => { setStage(v); setSelected(new Set()); setOrderProcessingCsv(null); setShowCsvPreview(false); setCsvFilename(''); }}
           options={[
             ...stages.filter((s) => s.id !== 'rmaReturned').map((s) => ({
               value: s.id,
@@ -728,7 +764,8 @@ export default function WatchPage({
                       (stage === 'shipmentUpdate' &&
                         Number(row.idmsStatus) === -1 &&
                         row.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS') ||
-                      (stage === 'rmaReturned' && Number(row.idmsStatus) === 7);
+                      (stage === 'rmaReturned' && Number(row.idmsStatus) === 7) ||
+                      (stage === 'received' && row.syncStatus === 'DEVICE_RECEIVED_AT_3PL_SYNC_SUCCESS');
                     return (
                       <React.Fragment key={row.deviceId}>
                         <tr>
@@ -824,7 +861,7 @@ export default function WatchPage({
             </Callout>
           ) : null}
 
-          {selected.size > 0 && handoff ? (
+          {selected.size > 0 && handoff && stage !== 'received' ? (
             <Sheet>
               <NextStepAction
                 operationLabel={handoff.operationLabel}
@@ -835,6 +872,93 @@ export default function WatchPage({
                 onClick={handoff.onClick}
                 actionLabel={handoff.actionLabel}
               />
+            </Sheet>
+          ) : null}
+
+          {selected.size > 0 && (stage === 'shipmentUpdate' || stage === 'received') ? (
+            <Sheet>
+              <div className="lc-next">
+                <div style={{ minWidth: 0 }}>
+                  <div className="lc-next-head">
+                    <strong>Assets for Order Processing</strong>
+                    <Badge tone="info">
+                      {selected.size} device{selected.size !== 1 ? 's' : ''} selected
+                    </Badge>
+                  </div>
+                  <div className="muted small">Generate a SKU / Serial_Number CSV for order processing.</div>
+                  <div style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <label className="small" style={{ color: 'var(--accent)', whiteSpace: 'nowrap' }}>Enter File Name</label>
+                    <input
+                      className="mono small"
+                      style={{ width: '22ch', padding: '2px 6px', fontSize: '0.8em' }}
+                      placeholder={`Order_Processing_${run.setup?.trackingId ?? runId}.csv`}
+                      value={csvFilename}
+                      onChange={(e) => setCsvFilename(e.target.value)}
+                    />
+                    <span className="muted small">.csv added if omitted</span>
+                  </div>
+                </div>
+                <button className="btn secondary" onClick={generateOrderProcessingCsv}>
+                  Generate CSV
+                </button>
+              </div>
+            </Sheet>
+          ) : null}
+
+          {orderProcessingCsv ? (
+            <Sheet
+              eyebrow="Assets for Order Processing"
+              title={orderProcessingCsv.filename}
+              actions={
+                <>
+                  <button
+                    className="btn secondary small"
+                    onClick={() => setShowCsvPreview((v) => !v)}
+                  >
+                    {showCsvPreview ? 'Hide preview' : 'Preview'}
+                  </button>
+                  <button
+                    className="btn small"
+                    onClick={() => {
+                      const blob = new Blob([orderProcessingCsv.content], { type: 'text/csv' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = orderProcessingCsv.filename;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    }}
+                  >
+                    Download
+                  </button>
+                </>
+              }
+            >
+              {showCsvPreview ? (() => {
+                const lines = orderProcessingCsv.content.split(/\r?\n/).filter(Boolean);
+                const [headerLine, ...dataLines] = lines;
+                const headers = headerLine.split(',');
+                return (
+                  <div className="table-wrap" style={{ marginTop: '0.6rem' }}>
+                    <table style={{ fontSize: '0.78rem' }}>
+                      <thead>
+                        <tr>{headers.map((h) => <th key={h} className="raw">{h}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {dataLines.map((line, i) => (
+                          <tr key={i}>
+                            {line.split(',').map((cell, j) => (
+                              <td key={j} className="mono">{cell}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })() : null}
             </Sheet>
           ) : null}
         </>
