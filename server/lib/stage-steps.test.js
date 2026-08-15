@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { operationChain, pollingOrder } from './lifecycle.js';
+import { operationChain, pollingOrder, requiredStepsBefore, describeLifecycle } from './lifecycle.js';
 
 /**
  * Two orders, deliberately different.
@@ -30,5 +30,36 @@ describe('the order operations are compared in', () => {
 
   test('is stable across calls', () => {
     assert.deepEqual(pollingOrder(), pollingOrder());
+  });
+});
+
+describe('which steps a family must complete first', () => {
+  test('Octo must data-update before shipping', () => {
+    assert.deepEqual(requiredStepsBefore('shipmentUpdate', 'octo'), ['dataUpdate']);
+  });
+
+  test('no other family is required to', () => {
+    for (const family of ['driveri', 'dhub', 'dms', 'vbus', 'haptic']) {
+      assert.deepEqual(requiredStepsBefore('shipmentUpdate', family), [], family);
+    }
+  });
+
+  test('nothing is required before the step itself, or before an unrelated operation', () => {
+    assert.deepEqual(requiredStepsBefore('dataUpdate', 'octo'), []);
+    assert.deepEqual(requiredStepsBefore('received', 'octo'), []);
+  });
+
+  test('an unknown family requires nothing rather than throwing', () => {
+    assert.deepEqual(requiredStepsBefore('shipmentUpdate', 'nosuchfamily'), []);
+    assert.deepEqual(requiredStepsBefore('shipmentUpdate', null), []);
+  });
+
+  test('the UI payload carries the steps, so the rule is not re-implemented in the browser', () => {
+    const step = describeLifecycle({ dataUpdate: { label: 'Data update' } })
+      .stageSteps.find((s) => s.operation === 'dataUpdate');
+    assert.ok(step, 'dataUpdate must appear in the lifecycle payload');
+    assert.equal(step.before, 'shipmentUpdate');
+    assert.deepEqual(step.requiredFor, ['octo']);
+    assert.equal(step.operationLabel, 'Data update');
   });
 });

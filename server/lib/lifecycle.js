@@ -219,6 +219,20 @@ export function pollingOrder() {
 }
 
 /**
+ * Stage steps a family must complete before `operation` may be offered.
+ *
+ * Family decides *whether* a step is required, never where it sits in the order — see
+ * `pollingOrder`. An unknown or missing family requires nothing: refusing to offer an operation
+ * because a family could not be identified would block work on a guess.
+ */
+export function requiredStepsBefore(operation, family) {
+  if (!operation || !family) return [];
+  return loadLifecycle()
+    .stageSteps.filter((s) => s.before === operation && (s.requiredFor ?? []).includes(family))
+    .map((s) => s.operation);
+}
+
+/**
  * Which operation wrote a given `Sync_Status__c` base, e.g. SHIPMENT_UPDATE → shipmentUpdate.
  * The `$comment` entry in the map holds an array, so only string values are real.
  */
@@ -413,6 +427,14 @@ export function describeLifecycle(operations = {}) {
       enter: t.enter ?? null,
       note: t.note ?? null,
       uncertain: t.uncertain ?? null,
+    })),
+    stageSteps: model.stageSteps.map((s) => ({
+      operation: s.operation,
+      operationLabel: operations[s.operation]?.label ?? s.operation,
+      at: s.at,
+      before: s.before,
+      requiredFor: s.requiredFor ?? [],
+      note: s.note ?? null,
     })),
     operations: Object.entries(operations).map(([id, meta]) => {
       const movement = operationMovement(id);
