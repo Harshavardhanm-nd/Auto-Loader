@@ -298,7 +298,14 @@ export default function WatchPage({
 
     setBusy(busyKey);
     try {
-      await api.generate(runId, operation, [...selected]);
+      const result = await api.generate(runId, operation, [...selected]);
+      // `blocked` names families the operation could not be written for — a mixed run whose
+      // non-Octo groups have no data-update sheet, say. Navigating without saying so tells the
+      // operator every ticked device was covered when some were skipped.
+      if (result?.blocked?.length) {
+        const families = result.blocked.map((b) => b.familyLabel ?? b.family).join(', ');
+        onError(new Error(`Nothing was written for ${families}. ${result.blocked[0].message}`));
+      }
       await refreshRun();
       setReviewOperation(operation);
       goto('review');
@@ -364,7 +371,16 @@ export default function WatchPage({
    * them — same order of precedence, now stated once.
    */
   const handoff = (() => {
-    const isOctoRun = run.groups.length > 0 && run.groups.every((g) => g.family === 'octo');
+    // Read from the run's families rather than `groups.every(...)`, which called a mixed run
+    // non-Octo and offered Received at 3PL to its Octo devices — the same per-run mistake
+    // `stepRequiredBefore` above exists to correct.
+    //
+    // Still not per *device*: a run holding both Octo and Driveri groups withholds Received at 3PL
+    // from all of them, where only the Octo ones should carry on past it. Scoping eligibility by
+    // each device's own family needs the browser to map device id -> family, which this change does
+    // not do. Erring toward withholding is the safe half of that: a send not offered is a click
+    // away, a send offered wrongly is an email.
+    const isOctoRun = runFamilies.includes('octo');
     if (deadEligibleRows.length > 0) {
       return {
         operation: 'deviceDead',
