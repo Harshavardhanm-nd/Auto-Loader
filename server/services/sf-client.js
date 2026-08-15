@@ -13,7 +13,7 @@ import {
   markSessionVerified,
   refreshSessionSilently,
 } from './sf-session.js';
-import { decodeSku, scoreSkuMatch } from './sku-decoder.js';
+import { decodeSku, describeProduct, scoreSkuMatch } from './sku-decoder.js';
 import { loadProfiles, loadOperations } from '../lib/config.js';
 import {
   loadLifecycle,
@@ -131,45 +131,119 @@ export async function verifyConnection(env) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Every column the catalog query would like, and whether the query is allowed to go without it.
+ *
+ * `required` means standard — present on `Product2` in any Salesforce org, so an org missing one is
+ * broken rather than merely configured differently, and the query should fail loudly. Everything
+ * else is a custom field (`__c`) and therefore a **per-org deployment artifact**: it is asked for
+ * only when the org's own describe says it exists.
+ *
+ * This is not hypothetical. `L1_Product_Family__c` exists on `Product2` in testing and does not
+ * exist in staging (verified 2026-08-15). SOQL is all-or-nothing on its SELECT list — one unknown
+ * column fails the entire request with `INVALID_FIELD` — so naming it unconditionally returned
+ * *zero* products in staging rather than fewer, and the Families & SKUs picker rendered empty for
+ * every family.
+ */
+export const CATALOG_FIELDS = [
+  { api: 'Id', required: true },
+  { api: 'ProductCode', required: true },
+  { api: 'Name', required: true },
+  { api: 'Family', required: true },
+  { api: 'Product_SKU__c' },
+  { api: 'Device_Type__c' },
+  { api: 'IDMS_Device_Type__c' },
+  { api: 'Product_Serialized__c' },
+  { api: 'Product_Series__c' },
+  { api: 'Product_Category__c' },
+  { api: 'L1_Product_Family__c' },
+];
+
+/**
+ * The `Product_Series__c IN (…)` values, or none.
+ *
+ * These come from `config/profiles.json`, not from a request, but they are still interpolated into
+ * SOQL — so anything that could terminate the literal is dropped rather than escaped. A series name
+ * is a short identifier like `HAPTIC` or `D810`; a value carrying a quote or a backslash is a
+ * mistake in the config, and silently ignoring it is safer than shipping it to the query planner.
+ */
+function safeSeries(series) {
+  return (Array.isArray(series) ? series : [])
+    .map((s) => String(s).trim())
+    .filter((s) => s && /^[\w .+-]+$/.test(s));
+}
+
+/**
+ * The catalog SOQL, built against the fields this org actually exposes.
+ *
+ * `availableFields` is the org's describe, or `null` when it could not be read — in which case
+ * every field is asked for, which is exactly what this app did before it consulted describe, so an
+ * unreadable describe costs nothing that already worked.
+ *
+ * Both halves of the `WHERE` degrade with the fields behind them. `Product_Serialized__c = 'Yes'`
+ * is the right gate for almost everything, but not all of it: Haptic's only product is flagged
+ * `No` in the org while this app mints serials for it and loads it through a verified sheet, so
+ * `includeSeries` reopens the gate for exactly the series a family rule names rather than dropping
+ * the filter and pulling in 555 products no template can load. An org exposing neither field gets
+ * every active product — too many rows costs the operator a search, none stops the run, which is
+ * the same trade `filterCatalogByFamily` makes when a rule matches nothing.
+ *
+ * `IsActive = true` is never dropped: a retired product cannot be loaded and must never be offered.
+ */
+export function buildCatalogSoql({ availableFields = null, includeSeries = [] } = {}) {
+  const has = (api) =>
+    availableFields === null || [...availableFields].some((f) => String(f) === api);
+  const selected = CATALOG_FIELDS.filter((f) => f.required || has(f.api)).map((f) => f.api);
+
+  // Product_Series__c is the org's "L3 Product Series" and is what the picker's family filter keys
+  // on — the only field naming a product line exactly (DHUB, DMS, VBUS, D810, HAPTIC, the
+  // D-series). Device_Type__c is too coarse: every Driveri model *and* Octo share `Driveri`.
+  const series = has('Product_Series__c') ? safeSeries(includeSeries) : [];
+  const gates = [
+    has('Product_Serialized__c') ? "Product_Serialized__c = 'Yes'" : null,
+    series.length ? `Product_Series__c IN ('${series.join("','")}')` : null,
+  ].filter(Boolean);
+
+  return (
+    `SELECT ${selected.join(', ')}\n` +
+    `  FROM Product2\n` +
+    ` WHERE IsActive = true` +
+    (gates.length ? ` AND (${gates.join(' OR ')})` : '') +
+    `\n ORDER BY ProductCode`
+  );
+}
+
+/**
+ * Which fields an sObject exposes in this org, or `null` if the describe could not be read.
+ *
+ * Cached for the process: object metadata changes on a deployment, not between two page loads, and
+ * the catalog itself is already cached for ten minutes upstream.
+ */
+const describedFields = new Map();
+
+export async function fieldsOn(env, sobject) {
+  const key = `${env}:${sobject}`;
+  if (describedFields.has(key)) return describedFields.get(key);
+  let fields = null;
+  try {
+    const describe = await request(env, `/sobjects/${sobject}/describe`);
+    fields = describe.fields.map((f) => f.name);
+  } catch {
+    // Deliberately swallowed: an unreadable describe is a reason to fall back to asking for every
+    // field, not to fail the catalog. If a field is genuinely absent the query then fails with
+    // INVALID_FIELD, which the picker now reports rather than hiding.
+    fields = null;
+  }
+  describedFields.set(key, fields);
+  return fields;
+}
+
+/**
  * Serialized product catalog. Product_Serialized__c = 'Yes' is what decides whether a line
  * needs device serials — not the family, not the name (spec section 8).
  */
-/**
- * The `OR Product_Series__c IN (…)` half of the catalog query, or nothing.
- *
- * These values come from `config/profiles.json`, not from a request, but they are still
- * interpolated into SOQL — so anything that could terminate the literal is dropped rather than
- * escaped. A series name is a short identifier like `HAPTIC` or `D810`; a value carrying a quote
- * or a backslash is a mistake in the config, and silently ignoring it is safer than shipping it
- * to the query planner.
- */
-function seriesClause(series) {
-  const safe = (Array.isArray(series) ? series : [])
-    .map((s) => String(s).trim())
-    .filter((s) => s && /^[\w .+-]+$/.test(s));
-  if (!safe.length) return '';
-  return ` OR Product_Series__c IN ('${safe.join("','")}')`;
-}
-
 export async function fetchSerializedCatalog(env, { includeSeries = [] } = {}) {
-  const records = await query(
-    env,
-    // Product_Series__c is the org's "L3 Product Series" and is what the picker's family filter
-    // keys on — it is the only field that names a product line exactly (DHUB, DMS, VBUS, D810,
-    // HAPTIC, and the D-series). Device_Type__c is too coarse: every Driveri model *and* Octo
-    // share `Driveri`.
-    //
-    // The serialized flag is the right gate for almost everything, but not all of it: Haptic's
-    // only product is flagged `Product_Serialized__c = 'No'` in the org while this app mints
-    // serials for it and loads it through a verified sheet. `includeSeries` reopens the gate for
-    // exactly the series a family rule names, rather than dropping the filter and pulling in 555
-    // products no template can load.
-    `SELECT Id, ProductCode, Product_SKU__c, Name, Device_Type__c, IDMS_Device_Type__c, Family,
-            Product_Serialized__c, Product_Series__c, Product_Category__c, L1_Product_Family__c
-       FROM Product2
-      WHERE IsActive = true AND (Product_Serialized__c = 'Yes'${seriesClause(includeSeries)})
-      ORDER BY ProductCode`
-  );
+  const availableFields = await fieldsOn(env, 'Product2');
+  const records = await query(env, buildCatalogSoql({ availableFields, includeSeries }));
   return records.map((p) => ({
     id: p.Id,
     productCode: p.ProductCode,
@@ -191,6 +265,12 @@ export async function fetchSerializedCatalog(env, { includeSeries = [] } = {}) {
     // as an accessory by the picker.
     kind: p.Family === 'Hardware' ? 'device' : 'accessory',
     decoded: decodeSku(p.ProductCode),
+  })).map((p) => ({
+    // The picker's one-line "what is this". Attached here rather than derived in the UI so the
+    // decode and its fallback have one definition — 31 of these rows are accessories whose codes
+    // no positional decoder can read, and `decoded.decoded` stays honestly `false` for them.
+    ...p,
+    description: describeProduct(p),
   }));
 }
 
@@ -361,14 +441,90 @@ export async function fetchRecentOrders(env, { limit = 25 } = {}) {
 export const COLLISION_FIELDS = ['Name', 'SIM_Serial__c', 'Device_IMEI__c', 'Wifi_Mac__c'];
 
 /**
+ * The URL length Salesforce will accept on a GET query, with margin.
+ *
+ * Measured against testing 2026-08-15: a single-field query carrying 900 eleven-digit ids encodes
+ * to 14,588 characters and succeeds in 686 ms; the same query with 1,200 ids is 19,388 characters
+ * and comes back as an HTML error page rather than JSON. The real wall is the documented 16,384;
+ * this sits under it so a widened id or an extra field cannot silently cross it.
+ */
+export const QUERY_URL_LIMIT = 12000;
+
+/**
  * How many candidates to ask about per query.
  *
- * One `OR <field> IN (…)` clause per collision field, so the URL grows with the field list — this
- * is derived rather than a constant so that widening the list cannot quietly push the request past
- * Salesforce's ~8 KB URL limit.
+ * **A query's cost is nearly flat in the number of ids.** Measured against testing 2026-08-15:
+ * `Name IN (300)` took 654 ms and `Name IN (900)` took 686 ms — the ~1–2.4 s is fixed per round
+ * trip. Chunking at 75 therefore multiplied a fixed cost by the chunk count and bought nothing:
+ * one Octo allocation was 14 sequential queries and 33.7 seconds. So the chunk is now as large as
+ * the URL budget allows rather than a small constant.
+ *
+ * Each entry costs its own digits plus `%27…%27%2C` once URL-encoded, and the widest id in the
+ * batch sets the rate — 11-digit Driveri ids pack less densely than 6-digit Haptic serials.
  */
-export function collisionChunkSize() {
-  return Math.max(25, Math.floor(300 / COLLISION_FIELDS.length));
+export function collisionChunkSize(candidateIds = []) {
+  // The widest id present sets the rate. With nothing to measure, assume the widest a descriptor
+  // mints (11 digits, Driveri) rather than something optimistic — guessing narrow here is what
+  // would push a URL over the limit.
+  const widest = (candidateIds ?? []).reduce(
+    (max, v) => Math.max(max, String(v ?? '').length),
+    0
+  ) || 11;
+  return Math.max(25, Math.floor(QUERY_URL_LIMIT / (widest + 9)));
+}
+
+/**
+ * Every query needed to check a batch of candidates — one field per query.
+ *
+ * Splitting the old `Name IN (…) OR SIM_Serial__c IN (…) OR …` into one query per field halves
+ * each one: `Asset` holds 860,748 rows in this org, and an OR across four fields cannot be served
+ * from a single index, so it degrades toward a scan (~2.4 s against ~1.1 s single-field). The
+ * union of the per-field results is exactly the OR's result set, so nothing about *which*
+ * collisions are found changes — only how they are fetched.
+ *
+ * The SELECT still returns all four fields on every query: a row matched on `Name` may carry a
+ * taken `SIM_Serial__c`, and `takenFromRecords` reads all four off every record.
+ *
+ * Pure, so the plan can be asserted without a network.
+ */
+export function collisionQueryPlan(candidateIds = []) {
+  const ids = [...new Set((candidateIds ?? []).map((v) => String(v ?? '')))].filter(Boolean);
+  if (!ids.length) return [];
+
+  const size = collisionChunkSize(ids);
+  const plan = [];
+  for (let i = 0; i < ids.length; i += size) {
+    const inList = soqlInList(ids.slice(i, i + size));
+    for (const field of COLLISION_FIELDS) {
+      plan.push(`SELECT ${COLLISION_FIELDS.join(', ')} FROM Asset WHERE ${field} IN (${inList})`);
+    }
+  }
+  return plan;
+}
+
+/**
+ * How many collision queries are in flight at once.
+ *
+ * They are independent, and awaiting them one at a time was most of allocation's wall clock.
+ * Measured on twelve queries: 10.3 s serial, 3.7 s at 4, 1.95 s at 8, 1.74 s at 12, none failing.
+ * Six is past the knee of that curve while staying well clear of the org's concurrent-request
+ * limits — this runs beside polling and the UI's own reads, and starving those to save a few
+ * hundred milliseconds here would be a poor trade.
+ */
+const COLLISION_QUERY_CONCURRENCY = 6;
+
+/** Run `fn` over `items` with at most `limit` in flight, preserving order. */
+async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      out[index] = await fn(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 /**
@@ -390,25 +546,21 @@ export function takenFromRecords(records, askedIds) {
   return [...taken];
 }
 
-/** Which of these candidate ids are already taken? */
+/**
+ * Which of these candidate ids are already taken?
+ *
+ * The whole cost of allocating ids is this call, and all of it is network wait. The plan is one
+ * query per (field, chunk), run concurrently, and scored once at the end against the *full*
+ * candidate set — the old per-chunk scoring could only recognise a value inside the chunk that
+ * fetched its row.
+ */
 export async function findTakenDeviceIds(env, candidateIds) {
   const ids = [...new Set(candidateIds.map(String))].filter(Boolean);
   if (!ids.length) return [];
 
-  const taken = new Set();
-  const chunkSize = collisionChunkSize();
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    const chunk = ids.slice(i, i + chunkSize);
-    const inList = soqlInList(chunk);
-    const records = await query(
-      env,
-      `SELECT ${COLLISION_FIELDS.join(', ')}
-         FROM Asset
-        WHERE ${COLLISION_FIELDS.map((f) => `${f} IN (${inList})`).join('\n           OR ')}`
-    );
-    for (const value of takenFromRecords(records, chunk)) taken.add(value);
-  }
-  return [...taken];
+  const plan = collisionQueryPlan(ids);
+  const results = await mapWithConcurrency(plan, COLLISION_QUERY_CONCURRENCY, (soql) => query(env, soql));
+  return takenFromRecords(results.flat(), ids);
 }
 
 const FIELDS_FOR_WATCH = `Id, Name, Sync_Status__c, IDMS_Status__c, Status,

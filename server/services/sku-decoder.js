@@ -127,6 +127,64 @@ export function decodeSku(code) {
 }
 
 /**
+ * The one line under a product code in the picker: what this product *is*.
+ *
+ * `decodeSku` answers it for hardware, because those codes are positional. Accessory codes are not
+ * that scheme at all — `ACCAM1HAPTICMDL`, `DHUBX`, `VDI2L001` share no structure with each other,
+ * let alone with `B3E231USASI0210S` — so the decoder refuses them, correctly. **31 of the testing
+ * org's 170 catalog rows are in that position, and they are every row of the DHUB, DMS, VBUS and
+ * Haptic families**: the picker used to print "code not decodable" as the only thing those four
+ * families ever said. That is a true statement about the decoder and a useless one about the
+ * product.
+ *
+ * Every one of those 31 rows is already classified by the org, so fall back to its own words: the
+ * L2 category and the device type, then the L3 series if neither exists. Values are shown
+ * **verbatim** — `DMS_CAMERA` and `WIRELESS_ALERT_BUTTON` are literal strings the org and the Apex
+ * parser use, and re-casing one into "Dms Camera" misreports it.
+ *
+ * @param {object} product a catalog row as `fetchSerializedCatalog` returns it
+ * @returns {string} never empty — every row has at least a `kind`
+ */
+export function describeProduct(product) {
+  const p = product ?? {};
+  if (p.decoded?.decoded && p.decoded.summary) return p.decoded.summary;
+
+  // Two fields can be the same fact at different precisions (`DMS` the category, `DMS_CAMERA` the
+  // device type; `DHUBX` and `DHUB`). Compare them with separators stripped so `Asset Tracker` and
+  // `ASSET_TRACKER` are one word, and keep whichever is more specific.
+  const key = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const code = key(p.productCode ?? '');
+  const parts = [];
+
+  const add = (value) => {
+    const text = String(value ?? '').trim();
+    if (!text) return;
+    const k = key(text);
+    if (!k) return;
+    // Three EXCAM rows carry `Product_Series__c = 'EXCAM-<their own product code>'`, which repeats
+    // the line directly above it.
+    if (code && k.includes(code)) return;
+
+    for (let i = 0; i < parts.length; i++) {
+      const existing = key(parts[i]);
+      if (existing.includes(k)) return; // already said, at least as precisely
+      if (k.includes(existing)) {
+        parts[i] = text; // more specific than what we had
+        return;
+      }
+    }
+    parts.push(text);
+  };
+
+  add(p.productCategory);
+  add(p.deviceType);
+  if (!parts.length) add(p.productSeries);
+  if (parts.length) return parts.join(' · ');
+
+  return p.kind === 'device' ? 'Device' : 'Accessory';
+}
+
+/**
  * Rank catalog entries against a free-text query over both the raw code and its decoded
  * meaning, so "D-450 200 hours canada" matches B3E232CANSI....
  */

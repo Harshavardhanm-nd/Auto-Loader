@@ -6,10 +6,25 @@
  * D-series that make up Driveri. `Device_Type__c` cannot do this job: it calls every Driveri model
  * *and* Octo `Driveri`, so the two families are indistinguishable under it.
  *
- * Driveri is declared as "every `L1_Product_Family__c = Device` except series `D810`" rather than a
- * list of its seven current series. The D-series gain models regularly, and a list would silently
- * omit each new one — a SKU missing from its own family, with nothing to indicate it. The exclusion
- * of D810 is what keeps Driveri and Octo disjoint while together covering every device.
+ * Driveri is declared as "every device except series `D810`" rather than a list of its seven current
+ * series. The D-series gain models regularly, and a list would silently omit each new one — a SKU
+ * missing from its own family, with nothing to indicate it. The exclusion of D810 is what keeps
+ * Driveri and Octo disjoint while together covering every device.
+ *
+ * "Every device" is `sfFamily: ['Hardware']` — the **standard** `Product2.Family`. It used to be
+ * `l1Family: ['Device']`, the custom `L1_Product_Family__c`, until that field turned out not to
+ * exist on `Product2` in the staging org (2026-08-15). The two are the same partition where both
+ * exist: in testing all 137 `L1 = Device` rows are `Family = 'Hardware'` and all 33 `L1 = Accessory`
+ * rows are `Family = 'Accessory'`, nothing off the diagonal, and staging's Hardware-minus-D810 is
+ * the same 135 products. A standard field is the safer of two equivalent keys, because a custom one
+ * is a per-org deployment artifact. `l1Family` remains a usable criterion for any org that has it.
+ *
+ * A rule's positive criteria are ANDed by default. `match: 'any'` ORs them instead, for a family
+ * whose identifying field one org fills in and another leaves blank — Haptic's `ACCAM1HAPTICMDL`
+ * carries `Product_Series__c = 'HAPTIC'` in testing and a **blank series** in staging, while
+ * `Device_Type__c = 'HAPTIC'` holds in both. The series stays in the rule regardless of how it
+ * matches, because `declaredSeries` reads it to widen the query past the serialized gate — see
+ * below. `excludeSeries` is never an alternative; it vetoes under either mode.
  *
  * The one behaviour every path preserves: **this never returns an empty catalog because a rule
  * matched nothing.** A rule goes stale the moment the org renames a series, and hiding every SKU
@@ -69,28 +84,41 @@ export function declaredSeries(filters) {
   return [...out];
 }
 
-const CRITERIA = ['series', 'excludeSeries', 'l1Family', 'category', 'deviceType'];
+const CRITERIA = ['series', 'excludeSeries', 'sfFamily', 'l1Family', 'category', 'deviceType'];
 
 function hasCriteria(rule) {
   return CRITERIA.some((k) => Array.isArray(rule[k]) && rule[k].length);
 }
 
 function matches(product, rule) {
-  // Each positive criterion must hold. A row missing the field a rule names can never satisfy it —
-  // unclassified is not universal, and the nine seriesless products in this org must not leak into
-  // every family.
-  if (!satisfies(rule.series, product.productSeries)) return false;
-  if (!satisfies(rule.l1Family, product.l1Family)) return false;
-  if (!satisfies(rule.category, product.productCategory)) return false;
-  if (!satisfies(rule.deviceType, product.deviceType)) return false;
-
+  // `excludeSeries` is a veto, and is applied before anything else so it holds however the positive
+  // criteria combine. Under `match: 'any'` treating it as one more alternative would let a rule
+  // saying "anything but D810" match a D810 on its other criterion.
   if (Array.isArray(rule.excludeSeries) && rule.excludeSeries.length) {
     if (product.productSeries && includesLoosely(rule.excludeSeries, product.productSeries)) {
       return false;
     }
   }
 
-  return true;
+  const declared = [
+    [rule.series, product.productSeries],
+    // `sfFamily` is Salesforce's standard `Product2.Family` — `Hardware` or `Accessory` — and is
+    // deliberately not called `family`, which in this app means the picker's own product family.
+    [rule.sfFamily, product.family],
+    [rule.l1Family, product.l1Family],
+    [rule.category, product.productCategory],
+    [rule.deviceType, product.deviceType],
+  ].filter(([list]) => Array.isArray(list) && list.length);
+
+  // A rule with no positive criterion at all — `excludeSeries` alone — keeps everything it did not
+  // veto. `.some()` over an empty list is `false`, so this cannot be left to the combiner.
+  if (!declared.length) return true;
+
+  // A row missing the field a rule names can never satisfy that criterion: unclassified is not
+  // universal, and the seriesless products in these orgs must not leak into every family.
+  return rule.match === 'any'
+    ? declared.some(([list, value]) => satisfies(list, value))
+    : declared.every(([list, value]) => satisfies(list, value));
 }
 
 function satisfies(list, value) {

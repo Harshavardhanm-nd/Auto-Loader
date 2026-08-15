@@ -15,8 +15,8 @@ export default function ReviewPage({
   refreshRun,
   goto,
   onError,
-  reviewOperation,
-  setReviewOperation,
+  pendingOperation,
+  setPendingOperation,
   setActiveOperation,
 }) {
   const [operation, setOperation] = React.useState(null);
@@ -29,13 +29,19 @@ export default function ReviewPage({
 
   const activeOperation = operation ?? run?.operation ?? 'initialLoad';
 
-  // When WatchPage sends us here with a pre-selected operation, apply it once then clear.
+  /**
+   * Open on whatever operation the page we came from was showing, once, then clear it.
+   *
+   * Validated against this run's own operation list rather than trusted: Watch's tab strip also
+   * holds read-only Asset views (`installed`, `rmaPending`, `deadView`) which are not operations,
+   * and selecting one of those here would leave the control showing nothing.
+   */
   React.useEffect(() => {
-    if (reviewOperation) {
-      setOperation(reviewOperation);
-      setReviewOperation(null);
-    }
-  }, [reviewOperation, setReviewOperation]);
+    if (!pendingOperation) return;
+    if (!operations) return; // wait for the list, so the check below can actually be made
+    if (operations.some((o) => o.id === pendingOperation)) setOperation(pendingOperation);
+    setPendingOperation(null);
+  }, [pendingOperation, setPendingOperation, operations]);
 
   // Tell the Runbar which operation is on screen, so its Operation and Units describe this file
   // rather than the run as a whole.

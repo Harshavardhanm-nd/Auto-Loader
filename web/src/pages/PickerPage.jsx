@@ -23,6 +23,12 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
   const [busy, setBusy] = React.useState(false);
   // Escape hatch from the family narrowing — see the catalog effect below.
   const [showAll, setShowAll] = React.useState(false);
+  // Why the catalog is missing, when it is. Kept rather than discarded — see the catalog effect.
+  const [catalogError, setCatalogError] = React.useState(null);
+  const [catalogReload, setCatalogReload] = React.useState(0);
+  // A read in flight is not a failed read. Without this the "unavailable" callout renders for as
+  // long as the first query takes, which on a cold catalog is a second of shouting about nothing.
+  const [catalogLoading, setCatalogLoading] = React.useState(false);
 
   const operation = setup.operation ?? 'initialLoad';
 
@@ -49,22 +55,37 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
    * `showAll` is not a convenience. A rule goes stale the moment someone renames a device type in
    * Salesforce, and a filter nobody can turn off would hide the SKU this run needs with no way
    * back.
+   *
+   * **The failure is kept, not discarded.** This used to `.catch(() => setCatalog(null))`, which
+   * collapsed every possible cause — an expired session, a dropped network, a query the org
+   * rejected — into one blank "catalog unavailable" line. That is what made a real outage
+   * unreadable: `L1_Product_Family__c` does not exist on `Product2` in staging, the whole catalog
+   * query failed with `INVALID_FIELD`, and the picker reported it as though the org simply had
+   * nothing to show. An empty table and a broken query must never look the same.
    */
   React.useEffect(() => {
     if (!activeFamily) return;
     let cancelled = false;
+    setCatalogLoading(true);
     api
       .products(env, showAll ? {} : { family: activeFamily })
       .then((products) => {
-        if (!cancelled) setCatalog(products);
+        if (cancelled) return;
+        setCatalog(products);
+        setCatalogError(null);
       })
-      .catch(() => {
-        if (!cancelled) setCatalog(null);
+      .catch((err) => {
+        if (cancelled) return;
+        setCatalog(null);
+        setCatalogError(err?.message || String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [env, activeFamily, showAll]);
+  }, [env, activeFamily, showAll, catalogReload]);
 
   const supported = React.useMemo(
     () =>
@@ -91,7 +112,10 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
     return catalog.products
       .filter((p) => {
         if (!term) return true;
-        const hay = [p.productCode, p.productSku, p.name, p.decoded?.model, p.decoded?.region]
+        // `description` is included because it is what the row visibly says — for the 31 accessory
+        // rows whose codes do not decode it is the only classification on screen, and text the
+        // operator can read but not search for reads as a broken search box.
+        const hay = [p.productCode, p.productSku, p.name, p.description, p.decoded?.model, p.decoded?.region]
           .filter(Boolean)
           .join(' ')
           .toLowerCase();
@@ -303,10 +327,25 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
             </div>
           ) : null}
 
-          {catalog === null ? (
-            <p className="prose small" style={{ marginBottom: 0 }}>
-              Catalog unavailable — connect to Salesforce to search it, or use the template SKU above.
+          {catalog === null && catalogLoading ? (
+            <p className="muted small" style={{ marginBottom: 0 }}>
+              Reading the catalog from Salesforce…
             </p>
+          ) : catalog === null ? (
+            // Conditional state, so it never folds into an Explainer: the operator has to act on
+            // it. The reason is shown verbatim — Salesforce names the column it rejected, and that
+            // sentence is the whole diagnosis when an org is missing a field.
+            <Callout tone="warn" title="Catalog unavailable">
+              <p className="prose small">
+                {catalogError
+                  ? 'Salesforce did not return the product catalog. Use the template SKU above to carry on, or fix the cause below and retry.'
+                  : 'Connect to Salesforce to search it, or use the template SKU above.'}
+              </p>
+              {catalogError ? <p className="reason">{catalogError}</p> : null}
+              <button className="btn small" onClick={() => setCatalogReload((n) => n + 1)}>
+                Retry
+              </button>
+            </Callout>
           ) : (
             <>
               <CatalogScope
@@ -330,9 +369,15 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
                         <div className="code">
                           {p.productCode} {onOrder ? <Badge tone="info">on order</Badge> : null}
                         </div>
-                        <div className="decoded">
-                          {p.decoded?.decoded ? p.decoded.summary : <span className="faint">code not decodable</span>}
-                        </div>
+                        {/*
+                          What this product is. A hardware code decodes positionally
+                          (`B3E231USASI0210S` → `D-450 · 100 hours · United States`); an accessory
+                          code does not decode at all, and used to read "code not decodable" — a
+                          fact about the decoder, in the one place reserved for a fact about the
+                          product. Every such row is classified by the org, so `description` falls
+                          back to its own words. Verbatim: `DMS_CAMERA` keeps its case.
+                        */}
+                        <div className="decoded">{p.description || p.decoded?.summary || p.name}</div>
                         <div className="name">{p.name}</div>
                       </div>
                       <button

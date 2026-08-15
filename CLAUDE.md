@@ -32,7 +32,7 @@ disabling that reasoning for `shipmentUpdate` and `received`. **Fixed 2026-08-15
 `dataUpdate` into `stageSteps` and adding `pollingOrder()` — see "The device life cycle lives in
 `config/lifecycle.json`" below for where the model lives now.
 
-The counts in this file (19 descriptors, 26 transitions, 193 tests) are what the repo actually holds;
+The counts in this file (19 descriptors, 26 transitions, 256 tests) are what the repo actually holds;
 `README.md` and `templates/README.md` still describe 13 templates and are not reliable on numbers.
 
 ## Commands
@@ -41,7 +41,7 @@ The counts in this file (19 descriptors, 26 transitions, 193 tests) are what the
 npm install                  # deps + the Chromium that drives the Salesforce/Outlook logins
 npm run dev                  # server :4317 (node --watch) + Vite UI :5317 (proxies /api), opens browser
 npm run dev:server           # server only
-npm test                     # 193 tests in 8 files — see "Test state" below, 39 currently fail
+npm test                     # 256 tests in 11 files — see "Test state" below, 39 currently fail
 npm run build && npm start   # single-process production mode on :4317 (Express serves dist/)
 ```
 
@@ -50,11 +50,14 @@ Single test file / single test:
 ```bash
 node --test server/lib/config.test.js                # 18 tests, 12 pass / 6 fail — DL routing, mailbox confusability
 node --test server/lib/lifecycle.test.js              # 51 tests, 51 pass / 0 fail — stage graph, classify, next-step
-node --test server/lib/stage-steps.test.js            # 10 tests, 10 pass / 0 fail — operationChain, pollingOrder, requiredStepsBefore
+node --test server/lib/stage-steps.test.js            # 19 tests, 19 pass / 0 fail — operationChain, pollingOrder, operationOrder, requiredStepsBefore
 node --test server/lib/stage-steps-shape.test.js      # 2 tests, 2 pass / 0 fail — stageSteps shape guard
 node --test server/services/templates.test.js         # 84 tests, 51 pass / 33 fail
-node --test server/services/catalog-filter.test.js    # 16 tests, 16 pass / 0 fail — family/series picker rules
+node --test server/services/catalog-filter.test.js    # 34 tests, 34 pass / 0 fail — family/series picker rules
+node --test server/services/catalog-query.test.js     # 12 tests, 12 pass / 0 fail — catalog SOQL vs. the org's own fields
+node --test server/services/product-description.test.js # 12 tests, 12 pass / 0 fail — the picker's one-line 'what is this'
 node --test server/services/collision-fields.test.js  # 8 tests, 8 pass / 0 fail — every minted series has a mapped collision field
+node --test server/services/collision-query.test.js   # 12 tests, 12 pass / 0 fail — one field per query, chunk size, URL budget
 node --test server/services/position.test.js          # 4 tests, 4 pass / 0 fail — ahead/behind/at against pollingOrder
 node --test --test-name-pattern "byte contract" server/services/templates.test.js
 ```
@@ -63,9 +66,10 @@ Node's runner prints its tallies with an `ℹ` prefix (`ℹ tests 69`), not TAP 
 
 ### Test state — 39 failures are pre-existing, not yours
 
-**Two of the eight test files currently fail: `config.test.js` and `templates.test.js`.**
+**Two of the eleven test files currently fail: `config.test.js` and `templates.test.js`.**
 `lifecycle.test.js`, `stage-steps.test.js`, `stage-steps-shape.test.js`, `catalog-filter.test.js`,
-`collision-fields.test.js` and `position.test.js` are green. The suite was last green as a whole at
+`catalog-query.test.js`, `product-description.test.js`, `collision-fields.test.js`,
+`collision-query.test.js` and `position.test.js` are green. The suite was last green as a whole at
 `e5c790d`; the five merges after it (`b78af52`…`20912a9`, the Octo/RMA/DEAD work) broke it and the
 tests were not updated. `lifecycle.test.js`'s 6 failures were the one exception: they were reporting
 a real app defect, not a stale assertion, until the stage-step work fixed it on 2026-08-15 — see
@@ -166,6 +170,13 @@ anything:
 
 - **`Callout`s never fold.** They are conditional state — session expired, MFA prompt, login failed,
   a pipeline with no mailbox. Folding one hides the thing you have to act on.
+- **A failed read never looks like an empty result.** Picker's catalog panel keeps the error and
+  quotes it verbatim in a `warn` Callout with a Retry, because Salesforce names the column or the
+  reason it rejected and that sentence is the whole diagnosis. It used to
+  `.catch(() => setCatalog(null))`, collapsing an expired session, a dropped network and a query the
+  org refused into one blank "catalog unavailable" line — which is why staging's missing
+  `L1_Product_Family__c` read as "this org has no products" for as long as it did. Verbatim text
+  goes in `.callout .reason`: mono, own case, `pre-wrap`.
 - **Live data never folds**, even when it is written as a sentence: Watch's "sent to *X* at *Y*,
   waiting for *Z*", its "this is a snapshot, click Refresh" staleness warning, Picker's "catalog
   unavailable" fallback, the per-stage notes on the Life cycle page.
@@ -179,6 +190,28 @@ sentences (`The only way the org changes`, `One family, one file, one email`) we
 above a title that already said what the panel was. The persistent
 `Runbar` in `App.jsx` shows the same seven fields on every page and starts them as `—`, so the strip
 doubles as the progress record.
+
+**One order for operations, and it comes from the server.** `operationOrder` (`lib/lifecycle.js`)
+is `pollingOrder()` first — the chain with stage steps spliced in — then everything else in the
+order `config/environments.json` declares it. All three lists that show operations use it: Review's
+selector, Watch's stage tabs, and Connect's routing table. Before 2026-08-15 each ordered itself and
+`dataUpdate` came out **last in every one of them**: Watch ranked a tab by the stage its operation
+moves the device *to*, and a stage step moves nothing, so it fell to a `?? 99` default; Review and
+Connect used raw config key order. Data update rendered after Shipment update, the reverse of the
+order a device meets them — `stageSteps` declares `before: "shipmentUpdate"` precisely because Octo
+owes the correction before it ships. **Do not re-sort these lists in the UI**: a second opinion in
+one page is how they drifted apart. The one visible side effect is `updateLoad` moving after
+`received`; it has no template in any family, so it is filtered out of every list anyway.
+
+**Review and Watch hand their operation to each other.** `goto(page, {operation})` carries it, and
+defaults to whatever the page being left was showing — so leaving Review on Shipment update lands on
+Watch's Shipment update tab, by the rail or by the in-page button, and back again. It is consumed
+once by the arriving page, which **validates it against its own list rather than trusting it**:
+Watch's strip holds read-only Asset views (`installed`, `rmaPending`) that are not operations, and
+Review can be showing one that is not watchable (`deviceDead` has a sheet and a mailbox but no sync
+status, so there is no tab for it). An unusable hand-off is ignored and the page opens on its own
+default. Pass `{operation: null}` explicitly to force that. This replaced `reviewOperation`, which
+only carried Watch → Review.
 
 **Operation and Units follow the page, not the run.** Review and Watch each own an operation
 selector and report it up through `setActiveOperation`; `goto` clears it, so a page without one
@@ -458,31 +491,91 @@ Three things the UI would otherwise have to ask for on every run:
 a product line exactly (`DHUB`, `DMS`, `VBUS`, `D810`, `HAPTIC`, and the D-series). **Do not reach
 for `Device_Type__c`**: it calls every Driveri model *and* Octo `Driveri`, so it cannot tell the two
 families apart — the reason `fetchSerializedCatalog` now also selects `Product_Series__c`,
-`Product_Category__c` (L2) and `L1_Product_Family__c`.
+`Product_Category__c` (L2) and, where the org has it, `L1_Product_Family__c`.
 
-Verified against testing 2026-08-15, of 170 catalog rows:
+Verified 2026-08-15 against **both** orgs — testing holds 170 catalog rows, staging 168:
 
-| Family | Rule | Rows |
+| Family | Rule | Rows (testing / staging) |
 |---|---|---|
-| `driveri` | `l1Family: [Device]`, `excludeSeries: [D810]` | 135 |
-| `octo` | `series: [D810]` | 2 |
-| `dhub` / `dms` / `vbus` | `series: [DHUB] / [DMS] / [VBUS]` | 2 / 2 / 3 |
-| `haptic` | `series: [HAPTIC]` | 1 |
+| `driveri` | `sfFamily: [Hardware]`, `excludeSeries: [D810]` | 135 / 135 |
+| `octo` | `series: [D810]` | 2 / 2 |
+| `dhub` / `dms` / `vbus` | `series: [DHUB] / [DMS] / [VBUS]` | 2 / 2 / 3, same in both |
+| `haptic` | `series: [HAPTIC]`, `deviceType: [HAPTIC]`, `match: any` | 1 / 1 |
 
-Two decisions worth keeping:
+Four decisions worth keeping:
 
 - **Driveri is "every device except D810", not a list of its seven series.** The D-series gain
   models regularly and a list would silently omit each new one — a SKU missing from its own family
   with nothing to indicate it. Excluding D810 is what keeps Driveri and Octo disjoint while
-  together covering every device: 135 + 2 = 137.
+  together covering every device: 135 + 2 = 137, in both orgs.
+- **"Every device" keys on the standard `Product2.Family`, not the custom `L1_Product_Family__c`.**
+  The rule was `l1Family: [Device]` until **2026-08-15**, when that custom field turned out not to
+  exist on `Product2` in staging at all. SOQL is all-or-nothing on its SELECT list, so naming it
+  failed the *entire* catalog query with `INVALID_FIELD` and the picker showed **nothing for every
+  family in staging** — not a short list, an empty one. The two fields are the same partition
+  wherever both exist (testing: all 137 `L1 = Device` rows are `Family = Hardware`, all 33
+  `L1 = Accessory` rows are `Family = Accessory`, nothing off the diagonal), and staging's
+  Hardware-minus-D810 is the same 135. **Prefer a standard field to a custom one whenever they
+  agree** — a `__c` field is a per-org deployment artifact and can go missing between sandboxes.
+  `l1Family` is still a supported criterion and still selected where the org has it; nothing ships
+  using it. `Product_Category__c` (L2) is *not* a viable substitute: staging's values are 135 nulls
+  plus `Refurb`/`Commercial`/`AMZ`, unrelated to testing's.
 - **The catalog is not purely `Product_Serialized__c = 'Yes'`.** Haptic's only product,
   `ACCAM1HAPTICMDL` "Haptic Feedback Module", is **active and flagged `Product_Serialized__c =
-  'No'`** in the org, while all three Haptic descriptors mint a `serial_number` series and load it
+  'No'` in testing**, while all three Haptic descriptors mint a `serial_number` series and load it
   through a verified `Haptic_Initial_Load.csv`. The org's flag and the sheets disagree, and **the
   sheets win** — they are what the Apex parser accepted. So `fetchSerializedCatalog` takes
   `includeSeries` and widens to exactly the series a family rule names (`declaredSeries`), which
   today adds one row. Dropping the serialized filter instead would pull in 555 products no template
   can load. Each row carries `serialized`, so the flag is reported rather than assumed.
+- **A rule's criteria are ANDed unless it says `match: "any"`.** That one product is the reason.
+  The two sandboxes describe it differently (verified 2026-08-15):
+
+  | | `Product_Serialized__c` | `Product_Series__c` | `Device_Type__c` |
+  |---|---|---|---|
+  | testing | `No` | `HAPTIC` | `HAPTIC` |
+  | staging | **`Yes`** | **blank** | `HAPTIC` |
+
+  Keyed on series alone the Haptic family matched nothing in staging, so the picker fell back to
+  listing **all 168 products** instead of the one Haptic SKU — the fallback working as designed, on
+  a rule that had gone stale for that org. `Device_Type__c` is the field that survives both
+  differences and matches exactly one product in each. It cannot simply *replace* the series: the
+  criteria are ANDed and staging's series is blank, and `declaredSeries` reads `series` to widen the
+  query past the serialized gate, which is the only reason testing's copy (flagged `No`) is in the
+  catalog at all. So the rule keeps both and ORs them. **`excludeSeries` is never an alternative** —
+  it vetoes under either mode, or "anything but D810" would match a D810 on its other criterion.
+  This is also the one sanctioned use of `Device_Type__c`: the warning above is about Driveri and
+  Octo, which share it; nothing else in either org is `HAPTIC`.
+
+**Every catalog row carries a `description` — the picker's one-line "what is this".**
+`describeProduct` (`sku-decoder.js`) prefers the decoded SKU, because a hardware code is positional
+and `B3E231USASI0210S` reads as `D-450 · 100 hours · United States`. Accessory codes are not that
+scheme — `ACCAM1HAPTICMDL`, `DHUBX`, `VDI2L001` share no structure — so the decoder refuses them,
+and **31 of the 170 rows are in that position: every row of the DHUB, DMS, VBUS and Haptic
+families.** The picker used to print `code not decodable` there, which is a fact about the decoder
+in the one place reserved for a fact about the product. All 31 are already classified by the org, so
+the fallback is its own words: L2 category, then device type, then L3 series, then the row's `kind`
+— so the line is never empty. Two rules in it: a value is dropped if it **repeats the product code**
+(three EXCAM rows carry `Product_Series__c = 'EXCAM-<their own code>'`, and the DHUBX product's
+category *is* `DHUBX`), and where two values are the same fact at different precisions the more
+specific wins (`DMS` → `DMS_CAMERA`). Values are rendered **verbatim** — `DMS_CAMERA` and
+`WIRELESS_ALERT_BUTTON` keep their case, per the literal-strings rule above. `decoded.decoded`
+stays honestly `false` for these rows; the fallback is presentation, not a claim to have decoded
+anything. Setup's order-line table still shows `—` for them: `fetchOrder` does not select
+`Product_Category__c`/`Device_Type__c`, and adding unguarded custom fields to that critical query is
+the fragility this file's describe rule exists to prevent — `—` is a conventional empty marker, not
+a false claim, so it was left alone.
+
+**The catalog query is built against the org's own describe, not a fixed field list.**
+`buildCatalogSoql({availableFields, includeSeries})` (`sf-client.js`) intersects `CATALOG_FIELDS`
+with whatever `fieldsOn(env, 'Product2')` reports, so a custom field one sandbox lacks is simply not
+named. Standard fields (`Id`, `ProductCode`, `Name`, `Family`) are always named — an org missing one
+is broken, not merely configured differently, and should fail loudly. Both halves of the `WHERE`
+degrade the same way: no `Product_Serialized__c` means no serialized gate at all rather than a
+failed query, on the same reasoning as the family fallback — too many rows costs a search, none
+stops the run. `IsActive = true` is never dropped. The describe is cached per `env:sobject` for the
+process; if it cannot be read the field list falls back to `null`, meaning "ask for everything",
+which is exactly what this app did before, so an unreadable describe costs nothing that worked.
 
 A rule that matches nothing still falls back to the whole catalog, and the message claims only what
 is certain — *"no serialized product in this org belongs to X"* — because a stale rule and a
@@ -669,9 +762,34 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
   A series whose values land in a field absent from that list is allocated blind, so adding a
   series means deciding where its values land. `collision-fields.test.js` walks every descriptor
   and fails if a series has no field mapped to it. Octo's `wired_speaker_serial` and
-  `native_cam_serial` become Assets in their own right and so are covered by `Name`. The chunk size
-  is derived from the field count rather than fixed, because each field adds an `OR … IN (…)` clause
-  and the request has to stay under Salesforce's ~8 KB URL limit.
+  `native_cam_serial` become Assets in their own right and so are covered by `Name`.
+
+  **The collision check is the entire cost of allocating ids, and all of it is network wait.**
+  Rebuilt 2026-08-15 after Octo measured 33.7 s, of which 33.7 s was Salesforce. Three measurements
+  against testing drove the shape it has now, and any change here should re-measure rather than
+  reason from first principles:
+
+  1. **A query's cost is nearly flat in the number of ids** — `Name IN (300)` 654 ms,
+     `Name IN (900)` 686 ms. The ~1–2.4 s is fixed *per round trip*. Chunking at 75 ids multiplied
+     a fixed cost by the chunk count and bought nothing, so `collisionChunkSize` now fills the URL
+     budget instead (~550 ids at 11 digits) and derives from the widest id, not the field count.
+  2. **One `OR` across all four fields costs about double a single-field query** (~2.4 s vs ~1.1 s).
+     `Asset` holds 860,748 rows here, and an OR over four fields cannot be served from one index.
+     `collisionQueryPlan` emits **one query per (field, chunk)**; the union is exactly the OR's
+     result set. Every query still `SELECT`s all four fields, because a row matched on `Name` may
+     carry a taken `SIM_Serial__c` and `takenFromRecords` reads all four off every record.
+  3. **The queries are independent and were awaited one at a time** — 12 queries took 10.3 s
+     serially, 1.95 s at concurrency 8. They now run at concurrency 6, past the knee of that curve
+     while leaving headroom for polling and the UI's own reads.
+
+  Net: Octo 33.7 s → 1.7 s, VBUS 17.0 s → 1.0 s, Driveri 9.3 s → 1.6 s. Verified id-for-id against
+  the old implementation on eight real ranges — identical taken sets, including the VBUS
+  `Wifi_Mac__c` case. The URL wall is real and measured: 900 eleven-digit ids encodes to 14,588
+  chars and works, 1,200 is 19,388 and returns an HTML error page, so `QUERY_URL_LIMIT` is 12,000.
+  Scoring moved to a single `takenFromRecords` over the *full* candidate set — the old per-chunk
+  scoring could only recognise a value inside the chunk that fetched its row. Groups are still
+  allocated **sequentially**: they write cursors into one `data/counters.json`, and the per-group
+  cost is now ~1–2 s, so there is nothing left worth racing for.
 - **Artifacts are written to `data/output/<runId>/` under their own filename**, no key prefix
   (changed in `33792d3`). The old `<key>__<filename>` namespacing existed because two operations
   could produce the same name; the `<Operation>_<Family>_{trackingId}` convention is now what keeps

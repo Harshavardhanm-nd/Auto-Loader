@@ -1113,6 +1113,26 @@ td .btn-row {
   margin: 0.4rem 0 0;
   padding-left: 1.1rem;
 }
+/**
+ * A verbatim message from another system, quoted inside a callout.
+ *
+ * Mono because it carries literal strings — an API field name like `L1_Product_Family__c`, a
+ * status, an error code — and those keep their own case and spacing. `pre-wrap` so a long
+ * Salesforce error keeps the line breaks it arrived with instead of collapsing into a paragraph,
+ * and `break-word` so nothing overflows the panel.
+ */
+.callout .reason {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
 .callout > :last-child {
   margin-bottom: 0;
 }

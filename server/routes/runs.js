@@ -41,6 +41,7 @@ import {
   summariseStages,
   nextFrom,
   operationMovement,
+  operationOrder,
   operationRole,
   syncStatusBase,
   classifyStage,
@@ -1415,7 +1416,10 @@ runsRouter.get('/:runId/operations', (req, res, next) => {
     const all = loadTemplates();
 
     res.json({
-      operations: Object.entries(operations).map(([id, meta]) => {
+      // Same order Watch's stage tabs use — see `operationOrder`. Review's selector is a sequence,
+      // not a flat list, so a stage step has to sit before the operation it precedes.
+      operations: operationOrder(Object.keys(operations)).map((id) => {
+        const meta = operations[id];
         const shared = isSharedOperation(id);
 
         // A shared operation is reported as a single row, since it produces one file for the
