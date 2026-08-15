@@ -224,6 +224,29 @@ export default function WatchPage({
       (s) => s.before === operation && (s.requiredFor ?? []).some((f) => runFamilies.includes(f))
     ) ?? null;
 
+  /**
+   * Is a related asset synced?
+   *
+   * `present` false means the accessory has no Asset in the org yet, and a null sync status means
+   * the integration has written nothing — both are reasons to wait, not to proceed.
+   */
+  const accessorySynced = (a) => Boolean(a?.present) && /_SYNC_SUCCESS$/.test(a?.syncStatus ?? '');
+
+  /**
+   * A device is complete when it and every accessory recorded against it are synced.
+   *
+   * Per device, not per run: the four devices whose speakers landed move on while the one that
+   * failed is held back. A device with no accessories recorded has nothing to wait on — absence of
+   * a record is not evidence of an unsynced part. A snapshot taken before accessories were captured
+   * carries none, and must keep its old reading rather than being judged incomplete.
+   */
+  const accessoriesComplete = (r) => (r.accessories ?? []).every(accessorySynced);
+
+  /** Devices held back only by an accessory, so the notice can name what is missing. */
+  const heldByAccessory = (snapshot?.rows ?? []).filter(
+    (r) => (r.accessories ?? []).length > 0 && !accessoriesComplete(r)
+  );
+
   // Rows eligible for shipment update: at Pre-Production and fully synced. A family that owes a
   // stage step first (Octo owes its data update) is only eligible to leave the *data-update* tab
   // for shipment update once that step's own success status is on the device — an initial-load
@@ -238,6 +261,7 @@ export default function WatchPage({
   const shipmentEligibleRows = (snapshot?.rows ?? []).filter((r) => {
     if (stage !== 'initialLoad' && stage !== 'dataUpdate') return false;
     if (Number(r.idmsStatus) !== -2) return false;
+    if (!accessoriesComplete(r)) return false;
     if (stage === 'dataUpdate' && owesBeforeShipment) return r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS';
     return (
       r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS' ||
@@ -761,6 +785,25 @@ export default function WatchPage({
               </p>
             </Explainer>
           </Sheet>
+
+          {heldByAccessory.length ? (
+            <Callout
+              tone="warn"
+              title={`${heldByAccessory.length} device(s) waiting on a related asset`}
+            >
+              <ul style={{ margin: '0.2rem 0 0', paddingLeft: '1.1rem' }}>
+                {heldByAccessory.map((r) => (
+                  <li key={r.deviceId} className="small">
+                    <span className="mono">{r.deviceId}</span> —{' '}
+                    {(r.accessories ?? [])
+                      .filter((a) => !accessorySynced(a))
+                      .map((a) => `${a.type} ${a.serialId}${a.present ? '' : ' (no asset yet)'}`)
+                      .join(', ')}
+                  </li>
+                ))}
+              </ul>
+            </Callout>
+          ) : null}
 
           {selected.size > 0 && handoff ? (
             <Sheet>
