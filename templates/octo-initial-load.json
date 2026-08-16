@@ -55,8 +55,7 @@
     "invoice_number": "NA",
     "po_number": "PO480",
     "wired_speaker_sku": "ACCET1WRDALRTBN",
-    "native_cam_sku": "ACCDC1DR20",
-    "shipment_tracking_id": "NAZ110003"
+    "native_cam_sku": "ACCDC1DR20"
   },
   "columns": [
     {
@@ -124,7 +123,7 @@
     },
     {
       "name": "shipment_tracking_id(required)",
-      "source": "field.shipment_tracking_id",
+      "source": "trackingId",
       "required": true
     },
     {
