@@ -433,7 +433,6 @@ export default function WatchPage({
     // each device's own family needs the browser to map device id -> family, which this change does
     // not do. Erring toward withholding is the safe half of that: a send not offered is a click
     // away, a send offered wrongly is an email.
-    const isOctoRun = runFamilies.includes('octo');
     if (deadEligibleRows.length > 0) {
       return {
         operation: 'deviceDead',
@@ -444,8 +443,7 @@ export default function WatchPage({
         onClick: sendToDeviceDead,
       };
     }
-    // Octo carries on through the chain rather than stopping at 3PL.
-    if (receivedEligibleRows.length > 0 && !isOctoRun) {
+    if (receivedEligibleRows.length > 0) {
       return {
         operation: 'received',
         operationLabel: 'Received at 3PL',
