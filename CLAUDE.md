@@ -32,7 +32,7 @@ disabling that reasoning for `shipmentUpdate` and `received`. **Fixed 2026-08-15
 `dataUpdate` into `stageSteps` and adding `pollingOrder()` — see "The device life cycle lives in
 `config/lifecycle.json`" below for where the model lives now.
 
-The counts in this file (19 descriptors, 26 transitions, 256 tests) are what the repo actually holds;
+The counts in this file (19 descriptors, 26 transitions, 261 tests) are what the repo actually holds;
 `README.md` and `templates/README.md` still describe 13 templates and are not reliable on numbers.
 
 ## Commands
@@ -41,7 +41,7 @@ The counts in this file (19 descriptors, 26 transitions, 256 tests) are what the
 npm install                  # deps + the Chromium that drives the Salesforce/Outlook logins
 npm run dev                  # server :4317 (node --watch) + Vite UI :5317 (proxies /api), opens browser
 npm run dev:server           # server only
-npm test                     # 256 tests in 11 files — see "Test state" below, 39 currently fail
+npm test                     # 261 tests in 12 files — see "Test state" below, 39 currently fail
 npm run build && npm start   # single-process production mode on :4317 (Express serves dist/)
 ```
 
@@ -58,6 +58,7 @@ node --test server/services/catalog-query.test.js     # 12 tests, 12 pass / 0 fa
 node --test server/services/product-description.test.js # 12 tests, 12 pass / 0 fail — the picker's one-line 'what is this'
 node --test server/services/collision-fields.test.js  # 8 tests, 8 pass / 0 fail — every minted series has a mapped collision field
 node --test server/services/collision-query.test.js   # 12 tests, 12 pass / 0 fail — one field per query, chunk size, URL budget
+node --test server/services/outlook-compose.test.js    # 5 tests, 5 pass / 0 fail — compose-open retry: use / retry / ambiguous
 node --test server/services/position.test.js          # 4 tests, 4 pass / 0 fail — ahead/behind/at against pollingOrder
 node --test --test-name-pattern "byte contract" server/services/templates.test.js
 ```
@@ -66,10 +67,10 @@ Node's runner prints its tallies with an `ℹ` prefix (`ℹ tests 69`), not TAP 
 
 ### Test state — 39 failures are pre-existing, not yours
 
-**Two of the eleven test files currently fail: `config.test.js` and `templates.test.js`.**
+**Two of the twelve test files currently fail: `config.test.js` and `templates.test.js`.**
 `lifecycle.test.js`, `stage-steps.test.js`, `stage-steps-shape.test.js`, `catalog-filter.test.js`,
 `catalog-query.test.js`, `product-description.test.js`, `collision-fields.test.js`,
-`collision-query.test.js` and `position.test.js` are green. The suite was last green as a whole at
+`collision-query.test.js`, `position.test.js` and `outlook-compose.test.js` are green. The suite was last green as a whole at
 `e5c790d`; the five merges after it (`b78af52`…`20912a9`, the Octo/RMA/DEAD work) broke it and the
 tests were not updated. `lifecycle.test.js`'s 6 failures were the one exception: they were reporting
 a real app defect, not a stale assertion, until the stage-step work fixed it on 2026-08-15 — see
@@ -911,7 +912,24 @@ re-runs it. Audits are serialised — two headless Chromiums would contend for o
 `PORT` (4317) · `DEFAULT_ENV` (testing) · `HEADLESS` (true — the SF login runs in the background;
 set `false` to watch it) · `STARTUP_SESSION_CHECK` (`all` | `salesforce` | `off`) ·
 `DL_TEMPLATE_DIR` · `OUTLOOK_AUTH_STATE_PATH` (borrow an existing session file) ·
-`OUTLOOK_WEB_URL` / `OUTLOOK_SENT_ITEMS_URL` · `OUTLOOK_{AUTH_WAIT,HYDRATION,SEND_ENABLE,SEND_CONFIRM,SENT_VERIFY}_MS`.
+`OUTLOOK_WEB_URL` / `OUTLOOK_SENT_ITEMS_URL` · `OUTLOOK_{AUTH_WAIT,HYDRATION,COMPOSE_OPEN,SEND_ENABLE,SEND_CONFIRM,SENT_VERIFY}_MS`.
+
+**`OUTLOOK_COMPOSE_OPEN_MS` (60s) is not a knob to tighten.** The compose panel's own render time was
+measured against the live mailbox on 2026-08-19 and it is both slow and wildly variable: 16.6s,
+18.1s, 18.8s in the morning, then 26.7s, 32.0s, 31.8s the same afternoon. It was a hardcoded 20s,
+which sits *inside* that range — so a send failed or succeeded depending on the hour, and the
+symptom was "Outlook clicked New mail but the compose form never opened (no To field)" on a window
+the operator could see on screen.
+
+The timeout was only half of it. The recovery discarded the "stale" panel and clicked New email
+again, on the assumption that a panel which had not rendered was broken; usually it was about to
+appear. So the retry raced it and left **two** composes open — and since every fill/attach/send
+helper resolves `.first()`, the recipients went into one and Send was pressed on the other, giving
+*"This message must have at least one recipient"* and no email. That is the same failure as the two
+untracked staging sends of 2026-08-17. The discard is gone (see the note where
+`discardStaleCompose` used to be); a timeout now counts panels via `composeRetryDecision`
+(`outlook-compose.test.js`, 5 tests): one panel is *used*, zero is retried once, more than one
+refuses to send at all rather than guessing which panel it filled.
 
 Outlook redirects to `outlook.cloud.microsoft` in this tenant, so Sent Items is resolved from
 whatever host the session lands on rather than a hardcoded URL. Failed sends write a screenshot and
