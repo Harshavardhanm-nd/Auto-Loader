@@ -252,13 +252,52 @@ export async function authenticateInteractively({ timeoutMs = AUTH_WAIT_MS } = {
 // Compose
 // ---------------------------------------------------------------------------
 
+const TO_FIELD_SELECTOR =
+  'div[aria-label="To"][contenteditable="true"], div[aria-label="To"][role="textbox"], input[aria-label="To"]';
+
 /** The compose form is open once it has a recipients field. */
 function composeToField(page) {
-  return page
+  return page.locator(TO_FIELD_SELECTOR).first();
+}
+
+/**
+ * How many compose panels are actually open right now, judged by how many "To" fields render.
+ * Every fill/attach/send helper below queries the page with `.first()` rather than a handle to
+ * "the panel we opened" — cheap when exactly one panel exists, but if a second one is ever on
+ * screen at the same time, different steps can silently resolve to different panels: recipients
+ * typed into one, the CSV attached to another, Send clicked on whichever the browser happens to
+ * list first. That is not a hypothetical — it is what produced two real, untracked sends to a
+ * staging mailbox while the compose this code was watching sat empty and failed on "at least one
+ * recipient" (2026-08-17, Octo shipment-update/received-at-3PL, staging). This count is the guard
+ * against it happening silently again.
+ */
+function countComposePanels(page) {
+  return page.locator(TO_FIELD_SELECTOR).count().catch(() => 0);
+}
+
+/**
+ * Best-effort close of whatever compose panel is currently on screen, so a retry does not stack a
+ * second one alongside a first that only turned out to be slow rather than absent.
+ */
+async function discardStaleCompose(page) {
+  const closeBtn = page
     .locator(
-      'div[aria-label="To"][contenteditable="true"], div[aria-label="To"][role="textbox"], input[aria-label="To"]'
+      'button[aria-label="Discard"], button[title="Discard"], button[aria-label="Close"], button[title="Close"]'
     )
     .first();
+  if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await closeBtn.click({ force: true }).catch(() => {});
+  } else {
+    await page.keyboard.press('Escape').catch(() => {});
+  }
+  await page.waitForTimeout(300);
+  // Escape (or Close) on a compose that already has content prompts to keep-or-discard; take the
+  // discard so the panel actually goes away instead of lingering behind a confirmation dialog.
+  const discardConfirm = page.getByRole('button', { name: /^\s*Discard\s*$/i }).first();
+  if (await discardConfirm.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await discardConfirm.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(300);
+  }
 }
 
 /**
@@ -288,6 +327,11 @@ async function openComposeWindow(page) {
       .then(() => true)
       .catch(() => false);
     if (opened) return;
+
+    // The click may have opened a panel that is merely slow to render, not one that failed
+    // outright. Close it before the next attempt clicks "New mail" again — otherwise a
+    // late-rendering first panel and a fresh second one both end up on screen at once.
+    if (attempt < 2) await discardStaleCompose(page);
   }
 
   throw new Error(
@@ -610,7 +654,16 @@ async function clickSend(page) {
 
   let attempts = 0;
   for (const selector of SEND_SELECTORS) {
-    if (attempts > 0 && !(await composeStillOpen())) return true;
+    if (attempts > 0) {
+      if (!(await composeStillOpen())) return true;
+      // `composeStillOpen` only asks "is there a Send button anywhere" — if a second, unrelated
+      // panel has appeared since the first click, that question can say yes even though the
+      // panel we actually filled already sent and closed. Escalating to another selector at that
+      // point risks clicking Send on the wrong (empty) panel, which reads as this call having
+      // failed even though the real message already went. Stop and let the caller report it
+      // rather than guess.
+      if ((await countComposePanels(page)) > 1) return false;
+    }
 
     const btn = page.locator(selector).first();
     if (!(await btn.isVisible().catch(() => false))) continue;
@@ -799,6 +852,24 @@ export async function composeAndSend(
 
   try {
     await openComposeWindow(page);
+
+    // Every fill/attach/send step below queries the page rather than holding a handle to this
+    // specific panel. That is only safe while exactly one panel exists — a second one (a slow
+    // first attempt that finally rendered, a leftover draft from an earlier crash, an OWA
+    // notification popping its own compose) lets one step land on this panel and a later step
+    // land on the other. Refuse outright rather than guess which is which: a message sent from
+    // the wrong panel is empty, and one sent from the right panel while this call reports failure
+    // is a real, untracked send. See countComposePanels' doc comment for the incident this guards.
+    const panelsAtOpen = await countComposePanels(page);
+    if (panelsAtOpen > 1) {
+      const shot = await captureFailureContext(page);
+      throw new Error(
+        `Outlook has ${panelsAtOpen} compose windows open at once. Filling and sending would be ` +
+          `ambiguous about which one gets the recipients and which gets Send. Close the extra ` +
+          `draft(s) in Outlook (check the Drafts folder) and retry.${shot}`
+      );
+    }
+
     await fillRecipients(page, recipients);
     await fillSubject(page, subject);
     await fillBody(page, body ?? '');
@@ -836,6 +907,18 @@ export async function composeAndSend(
           'The message is composed in the Outlook window with the CSV attached. Read it and press ' +
           'Send there, then confirm here so the app can check Sent Items.',
       };
+    }
+
+    // Re-check right before the click that actually sends: attaching or an "Attachment reminder"
+    // dialog can itself spawn extra UI, and this is the last point where landing on the wrong
+    // panel is still preventable rather than already a sent, untracked email.
+    const panelsAtSend = await countComposePanels(page);
+    if (panelsAtSend > 1) {
+      const shot = await captureFailureContext(page);
+      throw new Error(
+        `Outlook now has ${panelsAtSend} compose windows open, up from 1 when this message was ` +
+          `filled in. Refusing to click Send — it could land on the wrong one.${shot}`
+      );
     }
 
     const clicked = await clickSend(page);
