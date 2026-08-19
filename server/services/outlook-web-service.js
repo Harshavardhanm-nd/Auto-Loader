@@ -53,6 +53,15 @@ const AUTH_FILE = path.resolve(
 
 const AUTH_WAIT_MS = Number(process.env.OUTLOOK_AUTH_WAIT_MS || 600_000);
 const HYDRATION_MS = Number(process.env.OUTLOOK_HYDRATION_MS || 45_000);
+/**
+ * How long the compose panel gets to render its recipient box after "New email" is clicked.
+ *
+ * Measured against the live mailbox on 2026-08-19, three cold starts: 18.77s, 18.07s, 16.56s.
+ * This was a hardcoded 20s — barely above the real latency, so it expired on windows that were
+ * about to appear and turned an ordinary OWA slowdown into a failed send. 60s is ~3x the worst
+ * observed. Waiting longer for a compose costs nothing; giving up early costs a device load.
+ */
+const COMPOSE_OPEN_MS = Number(process.env.OUTLOOK_COMPOSE_OPEN_MS || 60_000);
 const SEND_ENABLE_MS = Number(process.env.OUTLOOK_SEND_ENABLE_MS || 60_000);
 const SEND_CONFIRM_MS = Number(process.env.OUTLOOK_SEND_CONFIRM_MS || 120_000);
 const SENT_VERIFY_MS = Number(process.env.OUTLOOK_SENT_VERIFY_MS || 180_000);
@@ -275,29 +284,39 @@ function countComposePanels(page) {
   return page.locator(TO_FIELD_SELECTOR).count().catch(() => 0);
 }
 
-/**
- * Best-effort close of whatever compose panel is currently on screen, so a retry does not stack a
- * second one alongside a first that only turned out to be slow rather than absent.
+/*
+ * There was a `discardStaleCompose(page)` here, called when the compose budget expired: it clicked
+ * Discard/Close or pressed Escape, then clicked "New email" again. It was removed on 2026-08-19.
+ *
+ * It was built on a wrong assumption — that a panel which had not rendered in time was broken. At
+ * a measured 16.6–18.8s against a 20s budget it was typically ~1s from appearing, so the discard
+ * either hit nothing (no panel yet) or raced the panel's arrival, and the follow-up click then put
+ * a second compose on screen. Do not reintroduce it: closing a window this app may still need to
+ * send is never the safe side of the trade. Panels are counted now — see `composeRetryDecision`.
  */
-async function discardStaleCompose(page) {
-  const closeBtn = page
-    .locator(
-      'button[aria-label="Discard"], button[title="Discard"], button[aria-label="Close"], button[title="Close"]'
-    )
-    .first();
-  if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await closeBtn.click({ force: true }).catch(() => {});
-  } else {
-    await page.keyboard.press('Escape').catch(() => {});
-  }
-  await page.waitForTimeout(300);
-  // Escape (or Close) on a compose that already has content prompts to keep-or-discard; take the
-  // discard so the panel actually goes away instead of lingering behind a confirmation dialog.
-  const discardConfirm = page.getByRole('button', { name: /^\s*Discard\s*$/i }).first();
-  if (await discardConfirm.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await discardConfirm.click({ force: true }).catch(() => {});
-    await page.waitForTimeout(300);
-  }
+
+/**
+ * What to do when the compose budget expires, judged only by how many panels are on screen.
+ *
+ * Pure so it can be tested without a browser (`outlook-compose.test.js`). The rule exists because
+ * the previous recovery — Escape the panel, click "New email" again — assumed a panel that had not
+ * rendered in time was broken. It usually was not: it was ~1s from appearing. Escaping it either
+ * did nothing (it did not exist yet) or raced its arrival, and the second click then put a *second*
+ * compose on screen. From there `.first()` is not a stable identity, so recipients landed in one
+ * panel and Send was pressed on the other, empty one.
+ *
+ *   1 panel  → it was slow, not absent. Use it. Never discard a window we might have to send.
+ *   0 panels → the click really was swallowed during hydration. One more click is safe.
+ *   >1       → already ambiguous; refuse rather than guess which panel we filled.
+ *
+ * An unreadable count (`countComposePanels` swallows its own errors, and NaN/null are possible)
+ * degrades to `retry`, never to `ambiguous`: a failed count must not abort an otherwise fine send.
+ */
+export function composeRetryDecision(panelCount) {
+  const panels = Number(panelCount);
+  if (!Number.isFinite(panels) || panels < 1) return 'retry';
+  if (panels > 1) return 'ambiguous';
+  return 'use';
 }
 
 /**
@@ -305,8 +324,11 @@ async function discardStaleCompose(page) {
  *
  * Playwright ignores the timeout on `isVisible()`, so probing per-selector that way returns in
  * milliseconds. On a slow-hydrating OWA that either finds no control or clicks one before the app
- * is interactive and has the click swallowed — and the failure then surfaces 20s later as the To
- * field timing out, which reads like a broken selector rather than a window that never opened.
+ * is interactive and has the click swallowed — and the failure then surfaces later as the To field
+ * timing out, which reads like a broken selector rather than a window that never opened.
+ *
+ * The budget is COMPOSE_OPEN_MS rather than a hardcoded 20s, and a timeout is resolved by counting
+ * panels instead of discarding one — see `composeRetryDecision`.
  */
 async function openComposeWindow(page) {
   const newMail = page.locator(INBOX_SELECTORS.join(', ')).first();
@@ -323,20 +345,31 @@ async function openComposeWindow(page) {
 
     await newMail.click().catch(() => {});
     const opened = await composeToField(page)
-      .waitFor({ state: 'visible', timeout: 20_000 })
+      .waitFor({ state: 'visible', timeout: COMPOSE_OPEN_MS })
       .then(() => true)
       .catch(() => false);
     if (opened) return;
 
-    // The click may have opened a panel that is merely slow to render, not one that failed
-    // outright. Close it before the next attempt clicks "New mail" again — otherwise a
-    // late-rendering first panel and a fresh second one both end up on screen at once.
-    if (attempt < 2) await discardStaleCompose(page);
+    // The budget expired. Ask the page what is actually there before touching anything: the panel
+    // may have rendered a moment after the wait gave up.
+    const decision = composeRetryDecision(await countComposePanels(page));
+    if (decision === 'use') return;
+    if (decision === 'ambiguous') {
+      const shot = await captureFailureContext(page);
+      throw new Error(
+        'Outlook has more than one compose window open, so this app cannot tell which one it ' +
+          'filled. Not sending. Close the extra compose windows in Outlook and try again.' +
+          `${shot}`
+      );
+    }
+    // decision === 'retry': no panel at all, so the click was swallowed. Clicking again cannot
+    // stack a second window, and needs no discard.
   }
 
+  const shot = await captureFailureContext(page);
   throw new Error(
     'Outlook clicked New mail but the compose form never opened (no To field). The mailbox was ' +
-      'reachable, so this is a slow or blocked compose window, not an expired session.'
+      `reachable, so this is a slow or blocked compose window, not an expired session.${shot}`
   );
 }
 
