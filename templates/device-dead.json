@@ -35,7 +35,7 @@
   "reusesExistingDevices": true,
   "notes": [
     "Applicable to devices at IDMS 7 (Returned RMA), 8 (Returned Non-RMA), or 12 (NF OOW).",
-    "Device Type is populated from the Asset's Device_Category__c field at generate time.",
+    "Device Type comes from the group's family, mapped onto the allowed values by resolveDeadDeviceType. It is NOT read from the Asset: Device_Category__c holds region codes (NAMZ) on real Assets, not device types.",
     "Allowed Device Type values: VBUS, DHUB, HAPTIC, WIRELESS_ALERT_BUTTON, Driveri, DMS.",
     "Dead Reason defaults to 'Lost By Customer'; override via the run's sharedFields.dead_reason.",
     "Moves the device from IDMS 7/8/12 to IDMS 9 (Dead)."

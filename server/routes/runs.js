@@ -82,14 +82,60 @@ const DEAD_DEVICE_TYPE_MAP = {
   'V-BUS': 'VBUS',
   DRIVERI: 'Driveri',
   'DRIVER-I': 'Driveri',
+  // Octo is the D810 series, and the org's own `Device_Type__c` calls both of its products
+  // `Driveri` — the same value it gives D210 through D475 (verified against testing 2026-08-20).
+  // The Dead sheet has no OCTO value and does not need one.
+  OCTO: 'Driveri',
   WIRELESS_ALERT_BUTTON: 'WIRELESS_ALERT_BUTTON',
   WIRELESS: 'WIRELESS_ALERT_BUTTON',
 };
 
-function resolveDeadDeviceType(deviceCategory) {
-  if (!deviceCategory) return 'HAPTIC';
-  const key = String(deviceCategory).toUpperCase().trim();
-  return DEAD_DEVICE_TYPE_MAP[key] ?? deviceCategory;
+/**
+ * The only values the Dead sheet's `Device Type` column accepts.
+ *
+ * Declared as data rather than left in `device-dead.json`'s prose notes so the resolver can enforce
+ * it. That descriptor carries no `sourceTemplate`, so nothing here has ever been byte-checked
+ * against a sheet the parser accepted — which is all the more reason to refuse a value we know is
+ * outside the list.
+ */
+export const DEAD_DEVICE_TYPES = new Set([
+  'VBUS',
+  'DHUB',
+  'HAPTIC',
+  'WIRELESS_ALERT_BUTTON',
+  'Driveri',
+  'DMS',
+]);
+
+/**
+ * The `Device Type` a Dead row carries, from the group's family.
+ *
+ * Note it is the *family*, not the Asset's `Device_Category__c` — `device-dead.json`'s note and
+ * CLAUDE.md both say otherwise and both are stale. The distinction matters: `Device_Category__c`
+ * holds region codes (`NAMZ`) on real Assets, so it could not serve this purpose anyway.
+ *
+ * Refuses rather than guessing, for the same reason `escapeField` refuses a comma instead of
+ * quoting it: no family legitimately resolves to something outside the sheet's vocabulary, so an
+ * unmapped one is a gap in this map, not data to pass along. It returned its input verbatim until
+ * 2026-08-20, which is how `octo` — added to the app after this map was written — spent its whole
+ * life emitting the literal string `octo` into a column that does not accept it, silently. A
+ * blocked generate is recoverable; a Dead file the parser mishandles is not.
+ */
+export function resolveDeadDeviceType(family) {
+  if (!family) {
+    throw new Error(
+      'Cannot build a Dead row without knowing the device\'s family — its Device Type would be a guess.',
+    );
+  }
+  const key = String(family).toUpperCase().trim();
+  const resolved = DEAD_DEVICE_TYPE_MAP[key];
+  if (!resolved) {
+    throw new Error(
+      `No Dead sheet Device Type is mapped for family "${family}". ` +
+        `Add it to DEAD_DEVICE_TYPE_MAP — allowed values are ${[...DEAD_DEVICE_TYPES].join(', ')}.`,
+    );
+  }
+  return resolved;
 }
 
 function groupTemplate(group, operation) {
