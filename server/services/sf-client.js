@@ -818,8 +818,11 @@ export function splitByStagePosition(summary) {
   return {
     ...summary,
     atStage: tallyRows(atStageRows),
-    movedOn: movedOn.map((r) => ({ deviceId: r.deviceId, syncStatus: r.syncStatus, stage: r.stage })),
-    notYet: notYet.map((r) => ({ deviceId: r.deviceId, syncStatus: r.syncStatus, stage: r.stage })),
+    // `id` is the Salesforce Asset id. It is carried through the reduction so the Watch page can
+    // link a serial back to its record — a device that has moved on is the one you most want to
+    // open. Explicitly null when absent, so an old snapshot reads as "no id" rather than missing.
+    movedOn: movedOn.map((r) => ({ deviceId: r.deviceId, assetId: r.assetId ?? null, syncStatus: r.syncStatus, stage: r.stage })),
+    notYet: notYet.map((r) => ({ deviceId: r.deviceId, assetId: r.assetId ?? null, syncStatus: r.syncStatus, stage: r.stage })),
   };
 }
 

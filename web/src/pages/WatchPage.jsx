@@ -25,9 +25,57 @@ import { Badge, Callout, Explainer, PageHead, Segmented, Sheet, Stat, SyncStatus
  * buttons ignore it — pressing those means "I do not care how recent it is, ask again".
  */
 const REFRESH_IF_OLDER_THAN_MS = 15_000;
+
+/**
+ * Where an Asset id lives in the browser, given the org's API host.
+ *
+ * `<instanceUrl>/<recordId>` looks like the robust choice — no hostname surgery, Salesforce routes
+ * it itself — and it was the first thing tried. Measured against the testing org it redirects to
+ * `…lightning.force.com/lightning/_classic/%2F<id>`: the *Classic* page wrapped in a Lightning
+ * frame, not the record page an operator recognises. So the canonical Lightning URL is built
+ * instead, and the host mapping is not a guess — it is the one that same redirect revealed
+ * (`…my.salesforce.com` → `…lightning.force.com`, confirmed for both sandboxes).
+ *
+ * If the host is not shaped that way, fall back to handing Salesforce the bare record id. That
+ * still resolves — via the Classic wrapper — which is a worse page but never a broken link.
+ */
+function assetHref(baseUrl, assetId) {
+  const base = baseUrl.replace(/\/+$/, '');
+  const lightning = base.replace(/\.my\.salesforce\.com$/i, '.lightning.force.com');
+  return lightning === base
+    ? `${base}/${assetId}`
+    : `${lightning}/lightning/r/Asset/${assetId}/view`;
+}
+
+/**
+ * A serial number that opens the Salesforce Asset it names.
+ *
+ * `baseUrl` follows the *run's* environment, never the rail's selection. A testing id and a staging
+ * id are indistinguishable by eye, so a link to the wrong org opens a plausible, wrong record —
+ * which is worse than not linking at all.
+ *
+ * With no id — a device with no Asset yet, an accessory not yet created, a snapshot written before
+ * the id was carried through the stage split — this renders the serial as plain text, exactly as
+ * before. A dead link that looks live is worse than no link.
+ */
+function AssetLink({ assetId, baseUrl, children }) {
+  if (!assetId || !baseUrl) return children;
+  return (
+    <a
+      className="asset-link"
+      href={assetHref(baseUrl, assetId)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Open this Asset in Salesforce"
+    >
+      {children}
+    </a>
+  );
+}
 export default function WatchPage({
   runId,
   run,
+  environments,
   refreshRun,
   goto,
   onError,
@@ -35,6 +83,14 @@ export default function WatchPage({
   setPendingOperation,
   setActiveOperation,
 }) {
+  // The org this run belongs to, not the one selected in the rail. `run.env` is fixed when the run
+  // is created; switching environments starts a new run, so in practice they agree — but a link is
+  // permanent enough that it should read the run's own answer rather than assume they do.
+  const sfBase = React.useMemo(() => {
+    const match = (environments ?? []).find((e) => e.name === run?.env);
+    return match?.instanceUrl ?? null;
+  }, [environments, run?.env]);
+
   const [stage, setStage] = React.useState('initialLoad');
   const [poll, setPoll] = React.useState(null);
   const [busy, setBusy] = React.useState(null);
@@ -613,6 +669,7 @@ export default function WatchPage({
       {isViewTab ? (
         <ViewTabContent
           stage={stage}
+          sfBase={sfBase}
           viewPoll={viewPoll}
           viewBusy={viewBusy}
           refreshError={refreshError}
@@ -713,7 +770,14 @@ export default function WatchPage({
               appear here once the integration writes a{' '}
               <code>{stageMeta.label.toUpperCase().replace(/ /g, '_')}</code> status.
               <div className="mono small" style={{ marginTop: '0.45rem' }}>
-                {fullSnapshot.notYet.map((r) => r.deviceId).join(', ')}
+                {fullSnapshot.notYet.map((r, i) => (
+                  <React.Fragment key={r.deviceId}>
+                    {i > 0 ? ', ' : null}
+                    <AssetLink assetId={r.assetId} baseUrl={sfBase}>
+                      {r.deviceId}
+                    </AssetLink>
+                  </React.Fragment>
+                ))}
               </div>
             </Callout>
           ) : null}
@@ -778,7 +842,11 @@ export default function WatchPage({
                               ) : null}
                             </td>
                           ) : null}
-                          <td className="mono">{row.deviceId}</td>
+                          <td className="mono">
+                            <AssetLink assetId={row.assetId} baseUrl={sfBase}>
+                              {row.deviceId}
+                            </AssetLink>
+                          </td>
                           <td>
                             {row.present ? (
                               <SyncStatusBadge status={row.syncStatus} />
@@ -803,7 +871,9 @@ export default function WatchPage({
                             <tr key={`${row.deviceId}-acc-${idx}`} style={{ backgroundColor: 'rgba(74, 139, 223, 0.05)' }}>
                               {eligibleRows.length > 0 ? <td /> : null}
                               <td className="mono small" style={{ paddingLeft: '2.5rem' }}>
-                                {acc.serialId}
+                                <AssetLink assetId={acc.assetId} baseUrl={sfBase}>
+                                  {acc.serialId}
+                                </AssetLink>
                               </td>
                               <td>
                                 {acc.present ? (
@@ -848,7 +918,12 @@ export default function WatchPage({
               <ul style={{ margin: '0.2rem 0 0', paddingLeft: '1.1rem' }}>
                 {heldByAccessory.map((r) => (
                   <li key={r.deviceId} className="small">
-                    <span className="mono">{r.deviceId}</span> —{' '}
+                    <span className="mono">
+                      <AssetLink assetId={r.assetId} baseUrl={sfBase}>
+                        {r.deviceId}
+                      </AssetLink>
+                    </span>{' '}
+                    —{' '}
                     {(r.accessories ?? [])
                       .filter((a) => !accessorySynced(a))
                       .map((a) => `${a.type} ${a.serialId}${a.present ? '' : ' (no asset yet)'}`)
@@ -1027,6 +1102,7 @@ function filterViewRows(rows, tab) {
 
 function ViewTabContent({
   stage,
+  sfBase,
   viewPoll,
   viewBusy,
   refreshError,
@@ -1096,7 +1172,11 @@ function ViewTabContent({
                     />
                   </td>
                 ) : null}
-                <td className="mono">{row.deviceId}</td>
+                <td className="mono">
+                  <AssetLink assetId={row.assetId} baseUrl={sfBase}>
+                    {row.deviceId}
+                  </AssetLink>
+                </td>
                 <td>
                   {row.present ? (
                     <SyncStatusBadge status={row.syncStatus} />

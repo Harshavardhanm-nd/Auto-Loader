@@ -1082,6 +1082,10 @@ runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
                   type: 'Wired Speaker',
                   serialId: acc.wiredSpeaker,
                   present: Boolean(accAsset),
+                  // An accessory is an Asset in its own right, so its serial links to its own
+                  // record. Null until the Asset exists — `present: false` and no id are the
+                  // same fact seen from two sides.
+                  assetId: accAsset?.id ?? null,
                   stage: classifyStage(accAsset?.idmsStatus ?? null),
                   syncStatus: accAsset?.syncStatus ?? null,
                   assetStatus: accAsset?.assetStatus ?? null,
@@ -1093,6 +1097,10 @@ runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
                   type: 'Native Camera',
                   serialId: acc.nativeCam,
                   present: Boolean(accAsset),
+                  // An accessory is an Asset in its own right, so its serial links to its own
+                  // record. Null until the Asset exists — `present: false` and no id are the
+                  // same fact seen from two sides.
+                  assetId: accAsset?.id ?? null,
                   stage: classifyStage(accAsset?.idmsStatus ?? null),
                   syncStatus: accAsset?.syncStatus ?? null,
                   assetStatus: accAsset?.assetStatus ?? null,

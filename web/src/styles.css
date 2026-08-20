@@ -949,6 +949,27 @@ th.mono {
   font-size: 12px;
   letter-spacing: 0.01em;
 }
+/*
+ * A serial number that links to its Salesforce Asset.
+ *
+ * Inherits the face deliberately: the serial is a literal value the Apex parser cares about, so it
+ * keeps IBM Plex Mono and its own case whether or not it happens to be inside a .mono cell.
+ *
+ * The underline is quiet but always present. Colour alone cannot carry "this is a link" — and a
+ * table of fully underlined serials reads as noise — so it sits at a fraction of the accent and
+ * resolves to full strength on hover and focus.
+ */
+.asset-link {
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.asset-link:hover,
+.asset-link:focus-visible {
+  text-decoration-color: var(--accent);
+}
 td.num,
 th.num {
   text-align: right;
