@@ -62,9 +62,24 @@ function writeSnapshot(runId, stage, patch) {
 }
 
 /**
- * Take one reading. Safe to call directly for a manual refresh.
+ * May a single, non-loop poll write the run's headline answer?
+ *
+ * Only when the caller explicitly asks *and* the batch has settled. `requested` is false for
+ * Watch's background top-up on tab activation — clicking between tabs must never silently finalise
+ * a run — and `settled` matches the loop's own rule: a headline over devices still in flight would
+ * be a verdict on an unfinished batch.
  */
-export async function pollOnce(runId, stage, deviceIds = null) {
+export function shouldFinaliseFromSinglePoll(requested, settled) {
+  return requested === true && settled === true;
+}
+
+/**
+ * Take one reading. Safe to call directly for a manual refresh.
+ *
+ * `finalise` lets an explicit refresh revise the run's verdict; see
+ * `shouldFinaliseFromSinglePoll` for why a background top-up must not.
+ */
+export async function pollOnce(runId, stage, deviceIds = null, { finalise = false } = {}) {
   const run = getRun(runId);
   const ids = deviceIds ?? run.polling?.[stage]?.deviceIds ?? [];
   if (!ids.length) {
@@ -87,6 +102,13 @@ export async function pollOnce(runId, stage, deviceIds = null) {
     failedDeviceIds: summary.failedDeviceIds,
     lastPolledAt: new Date().toISOString(),
   });
+
+  // An explicit "Refresh from org" over a settled batch is as good a reading as the loop's, and is
+  // the one an operator uses after fixing the devices that failed. The loop's own call sites are
+  // unaffected: `startPolling` finalises from its tick, not from here.
+  if (shouldFinaliseFromSinglePoll(finalise, summary.settled)) {
+    finaliseResult(runId, stage, summary);
+  }
 
   return summary;
 }

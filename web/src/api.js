@@ -100,7 +100,10 @@ export const api = {
 
   startPoll: (runId, stage) => post(`/api/runs/${runId}/poll/${stage}/start`, {}),
   stopPoll: (runId, stage) => post(`/api/runs/${runId}/poll/${stage}/stop`, {}),
-  pollOnce: (runId, stage) => post(`/api/runs/${runId}/poll/${stage}/once`, {}),
+  // `finalise` asks the server to revise the run's result if this reading is settled. Pass it from
+  // a button the operator pressed, never from a background refresh.
+  pollOnce: (runId, stage, { finalise = false } = {}) =>
+    post(`/api/runs/${runId}/poll/${stage}/once`, { finalise }),
   poll: (runId, stage) => get(`/api/runs/${runId}/poll/${stage}`),
   assets: (runId) => get(`/api/runs/${runId}/assets`),
   result: (runId) => get(`/api/runs/${runId}/result`),

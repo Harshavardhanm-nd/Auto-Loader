@@ -168,7 +168,9 @@ export default function WatchPage({
     setViewBusy(true);
     setRefreshError(null);
     try {
-      await api.pollOnce(runId, pollStage);
+      // The operator pressed this, so a settled reading may revise the run's verdict — this is how
+      // a run that reported "Part failed" clears once the failures are fixed.
+      await api.pollOnce(runId, pollStage, { finalise: true });
       const fresh = await api.poll(runId, pollStage);
       if (isViewTab) setViewPoll(fresh);
       else setPoll(fresh);

@@ -1084,7 +1084,13 @@ runsRouter.post('/:runId/poll/:stage/stop', (req, res, next) => {
 runsRouter.post('/:runId/poll/:stage/once', async (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
-    res.json(await pollOnce(run.runId, req.params.stage, stageDeviceIds(run, req.params.stage)));
+    // `finalise` is sent only by the explicit "Refresh from org" button. Watch's background top-up
+    // on tab activation omits it, so browsing tabs cannot rewrite the run's headline answer.
+    res.json(
+      await pollOnce(run.runId, req.params.stage, stageDeviceIds(run, req.params.stage), {
+        finalise: req.body?.finalise === true,
+      }),
+    );
   } catch (err) {
     next(err);
   }

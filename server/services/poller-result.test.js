@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { supersedesRecordedResult, REVISABLE_STATUSES } from './poller.js';
+import { supersedesRecordedResult, REVISABLE_STATUSES, shouldFinaliseFromSinglePoll } from './poller.js';
 import { pollingOrder } from '../lib/lifecycle.js';
 
 /**
@@ -68,5 +68,39 @@ describe('which run statuses a later poll may revise', () => {
   test('a completed run is not downgraded by re-polling an earlier stage', () => {
     assert.ok(!REVISABLE_STATUSES.has('completed'));
     assert.ok(!REVISABLE_STATUSES.has('completed-with-failures'));
+  });
+});
+
+/**
+ * When a single (non-loop) poll may write the run's headline answer.
+ *
+ * `pollOnce` never finalised at all, so the run's result could only ever be written by a polling
+ * loop reaching settled. That left the latch fix half-effective: an operator who fixes the failed
+ * devices and clicks "Refresh from org" still saw the old verdict, because a refresh was not
+ * allowed to revise it.
+ *
+ * Two things must stay true. A refresh only finalises when **asked** — Watch tops a tab up in the
+ * background on activation, and clicking between tabs must never silently mark a run complete. And
+ * it only finalises when the poll is **settled**, exactly as the loop does: the headline means
+ * "this is the answer", so writing one while devices are still in flight would report a verdict
+ * over an unfinished batch.
+ */
+describe('whether one poll may finalise the run', () => {
+  test('an explicit refresh of a settled batch finalises', () => {
+    assert.equal(shouldFinaliseFromSinglePoll(true, true), true);
+  });
+
+  test('a background top-up never finalises, settled or not', () => {
+    assert.equal(shouldFinaliseFromSinglePoll(false, true), false);
+    assert.equal(shouldFinaliseFromSinglePoll(false, false), false);
+  });
+
+  test('an explicit refresh mid-flight does not write a verdict', () => {
+    assert.equal(shouldFinaliseFromSinglePoll(true, false), false);
+  });
+
+  test('a missing flag is treated as background', () => {
+    // The route reads this off the request body; an old client sending nothing must not finalise.
+    assert.equal(shouldFinaliseFromSinglePoll(undefined, true), false);
   });
 });
