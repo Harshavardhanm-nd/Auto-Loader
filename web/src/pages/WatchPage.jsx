@@ -1075,7 +1075,9 @@ export default function WatchPage({
           offeredAbove={selected.size > 0 ? handoff?.operation : null}
         /> : null}
 
-      {run.result ? <ResultCard run={run} runId={runId} /> : null}
+      {run.result ? (
+        <ResultCard run={run} runId={runId} refreshRun={refreshRun} onError={onError} />
+      ) : null}
     </>
   );
 }
@@ -1443,8 +1445,62 @@ function StateBadge({ state, running }) {
   return <Badge tone={tones[state] ?? 'muted'}>{state ?? 'idle'}</Badge>;
 }
 
-function ResultCard({ run, runId }) {
+/**
+ * Is the recorded verdict behind a newer settled reading of its own stage?
+ *
+ * A result is written once, when a poll settles, and then read for the life of the run — so it goes
+ * out of date the moment the devices it describes move on. This compares it against the snapshot
+ * for the very stage that wrote it: if that stage has since been re-read, has settled, and
+ * disagrees on the counts, then what is on screen is not what the org currently says.
+ *
+ * **Only the recorded stage is consulted**, and that is the point. A newer reading of some other
+ * stage is not evidence about this verdict — `supersedesRecordedResult` refuses to let an earlier
+ * stage overwrite a later one, so offering a reconcile the server would decline is worse than
+ * offering none. Re-polling the recorded stage is an equal-rank supersede, which is exactly the
+ * case that is allowed.
+ */
+function verdictBehindSnapshot(run) {
+  const stage = run?.result?.stage;
+  const finalisedAt = run?.result?.finalisedAt;
+  const snap = stage ? run?.polling?.[stage] : null;
+  if (!stage || !finalisedAt || !snap?.settled || !snap.lastPolledAt) return null;
+  if (new Date(snap.lastPolledAt) <= new Date(finalisedAt)) return null;
+
+  const verdictLoaded = run.result.loadedDeviceIds?.length ?? 0;
+  const verdictFailed = run.result.failedDeviceIds?.length ?? 0;
+  const nowSucceeded = snap.counts?.succeeded ?? 0;
+  const nowFailed = snap.counts?.failed ?? 0;
+  // Agreeing counts mean the verdict is merely older, not wrong. Nothing to reconcile.
+  if (nowSucceeded === verdictLoaded && nowFailed === verdictFailed) return null;
+
+  return { stage, polledAt: snap.lastPolledAt, nowSucceeded, nowFailed, verdictLoaded, verdictFailed };
+}
+
+function ResultCard({ run, runId, refreshRun, onError }) {
   const ids = run.result.loadedDeviceIds ?? [];
+  const behind = verdictBehindSnapshot(run);
+  const [recheckBusy, setRecheckBusy] = React.useState(false);
+
+  /**
+   * Re-read the stage that wrote this verdict, and let it revise it.
+   *
+   * This exists because the obvious route does not work: every asset-view tab polls `initialLoad`,
+   * so "Refresh from org" on Shipped Active cannot revise a verdict recorded by `shipmentUpdate` —
+   * the rank guard correctly refuses it. Rather than loosen that guard, the reconcile goes to the
+   * recorded stage directly, so the operator never has to know which tab secretly polls what.
+   */
+  const recheck = async () => {
+    setRecheckBusy(true);
+    try {
+      await api.pollOnce(runId, behind.stage, { finalise: true });
+      await refreshRun();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setRecheckBusy(false);
+    }
+  };
+
   return (
     <Sheet
       eyebrow={`Finalised ${new Date(run.result.finalisedAt).toLocaleString()}`}
@@ -1460,6 +1516,22 @@ function ResultCard({ run, runId }) {
         </>
       }
     >
+      {behind ? (
+        <Callout tone="warn" title="This verdict is older than the last reading">
+          It was finalised{' '}
+          <strong>{new Date(run.result.finalisedAt).toLocaleString()}</strong> and says{' '}
+          {behind.verdictLoaded} loaded, {behind.verdictFailed} failed. The last settled read of{' '}
+          <strong>{behind.stage}</strong>, at{' '}
+          <strong>{new Date(behind.polledAt).toLocaleString()}</strong>, found{' '}
+          {behind.nowSucceeded} succeeded and {behind.nowFailed} failed. Devices that were fixed
+          after this was written are still listed as failures below.
+          <div style={{ marginTop: '0.6rem' }}>
+            <button className="btn small" onClick={recheck} disabled={recheckBusy}>
+              {recheckBusy ? 'Re-checking…' : `Re-check against ${behind.stage}`}
+            </button>
+          </div>
+        </Callout>
+      ) : null}
       <p className="prose small">
         Reached{' '}
         <span className="mono">
