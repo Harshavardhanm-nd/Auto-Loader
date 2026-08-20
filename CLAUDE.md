@@ -411,11 +411,27 @@ don't are exactly `received-load`, `partner-order-load`, `device-dead` and `rma-
 There are **four** row planners in `csv-builder.js`, not three: `planGeneratedRows`,
 `planWizardRows`, `planExistingRows` and `planDeadRows`. The last takes
 `{deviceId, deviceType}` pairs and is the only one that writes a second `existing.*` column —
-`device_type`, resolved at generate time from the Asset's `Device_Category__c` through
-`resolveDeadDeviceType` (`runs.js:88`), which maps org spellings onto the sheet's vocabulary
-(`DRIVER-I` → `Driveri`, `WIRELESS` → `WIRELESS_ALERT_BUTTON`) and **defaults to `HAPTIC` when the
-category is absent**. That default is a guess about a physical device; check it before relying on a
-Dead file for a mixed batch.
+`device_type`, resolved at generate time from **the group's family** through
+`resolveDeadDeviceType` (`runs.js:124`), which maps it onto the sheet's six-value vocabulary
+(`DEAD_DEVICE_TYPES`: `VBUS`, `DHUB`, `HAPTIC`, `WIRELESS_ALERT_BUTTON`, `Driveri`, `DMS`).
+
+**This paragraph said `Device_Category__c` until 2026-08-20 and was wrong** — as does
+`device-dead.json`'s own note, now corrected. Nothing reads that field here, and it could not serve:
+on real Assets it holds region codes (`NAMZ` on every device checked in testing), not device types.
+
+The resolver **refuses an unmapped or missing family** rather than substituting anything. It used to
+return its input verbatim, and default to `HAPTIC` when the family was absent. Both were silent, and
+the first one bit: `octo` arrived after the map was written, so an Octo Dead file carried the literal
+string `octo` in a column that accepts six values and none of them is that. Fixed 2026-08-20 by
+mapping `OCTO` → `Driveri` — the org's own `Device_Type__c` calls both D810 products `Driveri`, the
+same value it gives D210 through D475 — and by throwing on anything unmapped, named in the error
+along with the allowed list. `server/routes/dead-device-type.test.js` walks every family in
+`templates/` and fails if one resolves outside the vocabulary, so the next family added cannot
+repeat it.
+
+The `HAPTIC` default was **unreachable** on this path, for what it is worth: `runDeviceIds` and the
+id→family map iterate the same `groups[].lines[].generatedRows`, so a device id always has a family.
+It is gone anyway — a guess about a physical device should not sit in the code waiting for a caller.
 
 Filenames were standardised in `33792d3` to `<Operation>_<Family>_{trackingId}.csv`
 (`Initial_Load_Driveri_B3E110005.csv`). `{family}` is a placeholder `buildCsv` fills from its

@@ -141,6 +141,10 @@ export default function App() {
   const shared = {
     env,
     activeEnv,
+    // Every environment, so a page can resolve the org a *run* belongs to rather than the one
+    // currently selected in the rail. Watch links serials to Salesforce records, and a testing
+    // id and a staging id are indistinguishable by eye — the link must follow `run.env`.
+    environments,
     session,
     refreshSession,
     setup,

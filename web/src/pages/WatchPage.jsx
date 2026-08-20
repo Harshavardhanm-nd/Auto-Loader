@@ -25,9 +25,57 @@ import { Badge, Callout, Explainer, PageHead, Segmented, Sheet, Stat, SyncStatus
  * buttons ignore it — pressing those means "I do not care how recent it is, ask again".
  */
 const REFRESH_IF_OLDER_THAN_MS = 15_000;
+
+/**
+ * Where an Asset id lives in the browser, given the org's API host.
+ *
+ * `<instanceUrl>/<recordId>` looks like the robust choice — no hostname surgery, Salesforce routes
+ * it itself — and it was the first thing tried. Measured against the testing org it redirects to
+ * `…lightning.force.com/lightning/_classic/%2F<id>`: the *Classic* page wrapped in a Lightning
+ * frame, not the record page an operator recognises. So the canonical Lightning URL is built
+ * instead, and the host mapping is not a guess — it is the one that same redirect revealed
+ * (`…my.salesforce.com` → `…lightning.force.com`, confirmed for both sandboxes).
+ *
+ * If the host is not shaped that way, fall back to handing Salesforce the bare record id. That
+ * still resolves — via the Classic wrapper — which is a worse page but never a broken link.
+ */
+function assetHref(baseUrl, assetId) {
+  const base = baseUrl.replace(/\/+$/, '');
+  const lightning = base.replace(/\.my\.salesforce\.com$/i, '.lightning.force.com');
+  return lightning === base
+    ? `${base}/${assetId}`
+    : `${lightning}/lightning/r/Asset/${assetId}/view`;
+}
+
+/**
+ * A serial number that opens the Salesforce Asset it names.
+ *
+ * `baseUrl` follows the *run's* environment, never the rail's selection. A testing id and a staging
+ * id are indistinguishable by eye, so a link to the wrong org opens a plausible, wrong record —
+ * which is worse than not linking at all.
+ *
+ * With no id — a device with no Asset yet, an accessory not yet created, a snapshot written before
+ * the id was carried through the stage split — this renders the serial as plain text, exactly as
+ * before. A dead link that looks live is worse than no link.
+ */
+function AssetLink({ assetId, baseUrl, children }) {
+  if (!assetId || !baseUrl) return children;
+  return (
+    <a
+      className="asset-link"
+      href={assetHref(baseUrl, assetId)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Open this Asset in Salesforce"
+    >
+      {children}
+    </a>
+  );
+}
 export default function WatchPage({
   runId,
   run,
+  environments,
   refreshRun,
   goto,
   onError,
@@ -35,6 +83,14 @@ export default function WatchPage({
   setPendingOperation,
   setActiveOperation,
 }) {
+  // The org this run belongs to, not the one selected in the rail. `run.env` is fixed when the run
+  // is created; switching environments starts a new run, so in practice they agree — but a link is
+  // permanent enough that it should read the run's own answer rather than assume they do.
+  const sfBase = React.useMemo(() => {
+    const match = (environments ?? []).find((e) => e.name === run?.env);
+    return match?.instanceUrl ?? null;
+  }, [environments, run?.env]);
+
   const [stage, setStage] = React.useState('initialLoad');
   const [poll, setPoll] = React.useState(null);
   const [busy, setBusy] = React.useState(null);
@@ -112,7 +168,9 @@ export default function WatchPage({
     setViewBusy(true);
     setRefreshError(null);
     try {
-      await api.pollOnce(runId, pollStage);
+      // The operator pressed this, so a settled reading may revise the run's verdict — this is how
+      // a run that reported "Part failed" clears once the failures are fixed.
+      await api.pollOnce(runId, pollStage, { finalise: true });
       const fresh = await api.poll(runId, pollStage);
       if (isViewTab) setViewPoll(fresh);
       else setPoll(fresh);
@@ -613,6 +671,7 @@ export default function WatchPage({
       {isViewTab ? (
         <ViewTabContent
           stage={stage}
+          sfBase={sfBase}
           viewPoll={viewPoll}
           viewBusy={viewBusy}
           refreshError={refreshError}
@@ -713,7 +772,14 @@ export default function WatchPage({
               appear here once the integration writes a{' '}
               <code>{stageMeta.label.toUpperCase().replace(/ /g, '_')}</code> status.
               <div className="mono small" style={{ marginTop: '0.45rem' }}>
-                {fullSnapshot.notYet.map((r) => r.deviceId).join(', ')}
+                {fullSnapshot.notYet.map((r, i) => (
+                  <React.Fragment key={r.deviceId}>
+                    {i > 0 ? ', ' : null}
+                    <AssetLink assetId={r.assetId} baseUrl={sfBase}>
+                      {r.deviceId}
+                    </AssetLink>
+                  </React.Fragment>
+                ))}
               </div>
             </Callout>
           ) : null}
@@ -742,6 +808,9 @@ export default function WatchPage({
                       </th>
                     ) : null}
                     <th className="raw">device_id</th>
+                    <th>Device</th>
+                    <th>SKU</th>
+                    <th>Category</th>
                     <th>Sync status</th>
                     <th>IDMS Status</th>
                     <th>IDMS No</th>
@@ -778,7 +847,17 @@ export default function WatchPage({
                               ) : null}
                             </td>
                           ) : null}
-                          <td className="mono">{row.deviceId}</td>
+                          <td className="mono">
+                            <AssetLink assetId={row.assetId} baseUrl={sfBase}>
+                              {row.deviceId}
+                            </AssetLink>
+                          </td>
+                          {/* What the device is, before where it is. The name is prose so it takes
+                              the normal face; SKU and category are literal org values and keep
+                              mono and their own case. */}
+                          <td className="small">{row.productName ?? '—'}</td>
+                          <td className="mono small">{row.sku ?? '—'}</td>
+                          <td className="mono small">{row.deviceCategory ?? '—'}</td>
                           <td>
                             {row.present ? (
                               <SyncStatusBadge status={row.syncStatus} />
@@ -803,8 +882,21 @@ export default function WatchPage({
                             <tr key={`${row.deviceId}-acc-${idx}`} style={{ backgroundColor: 'rgba(74, 139, 223, 0.05)' }}>
                               {eligibleRows.length > 0 ? <td /> : null}
                               <td className="mono small" style={{ paddingLeft: '2.5rem' }}>
-                                {acc.serialId}
+                                <AssetLink assetId={acc.assetId} baseUrl={sfBase}>
+                                  {acc.serialId}
+                                </AssetLink>
                               </td>
+                              {/* An accessory's "device name" is what kind of part it is. It used
+                                  to sit in the IDMS Status cell, which left that column meaning two
+                                  different things depending on the row; now it has a column of its
+                                  own and IDMS Status reads the same way as on the parent row. */}
+                              <td className="small">
+                                <span style={{ fontSize: '0.85rem', fontStyle: 'italic', color: 'var(--accent)' }}>
+                                  {acc.type}
+                                </span>
+                              </td>
+                              <td className="small faint">—</td>
+                              <td className="small faint">—</td>
                               <td>
                                 {acc.present ? (
                                   <SyncStatusBadge status={acc.syncStatus} />
@@ -813,9 +905,7 @@ export default function WatchPage({
                                 )}
                               </td>
                               <td className="small">
-                                <span style={{ fontSize: '0.85rem', fontStyle: 'italic', color: 'var(--accent)' }}>
-                                  {acc.type}
-                                </span>
+                                <IdmsStatusLabel stage={acc.stage} />
                               </td>
                               <td className="mono small">{acc.stage?.code ?? '—'}</td>
                               <td className="small">{acc.assetStatus ?? '—'}</td>
@@ -848,7 +938,12 @@ export default function WatchPage({
               <ul style={{ margin: '0.2rem 0 0', paddingLeft: '1.1rem' }}>
                 {heldByAccessory.map((r) => (
                   <li key={r.deviceId} className="small">
-                    <span className="mono">{r.deviceId}</span> —{' '}
+                    <span className="mono">
+                      <AssetLink assetId={r.assetId} baseUrl={sfBase}>
+                        {r.deviceId}
+                      </AssetLink>
+                    </span>{' '}
+                    —{' '}
                     {(r.accessories ?? [])
                       .filter((a) => !accessorySynced(a))
                       .map((a) => `${a.type} ${a.serialId}${a.present ? '' : ' (no asset yet)'}`)
@@ -980,7 +1075,9 @@ export default function WatchPage({
           offeredAbove={selected.size > 0 ? handoff?.operation : null}
         /> : null}
 
-      {run.result ? <ResultCard run={run} runId={runId} /> : null}
+      {run.result ? (
+        <ResultCard run={run} runId={runId} refreshRun={refreshRun} onError={onError} />
+      ) : null}
     </>
   );
 }
@@ -1027,6 +1124,7 @@ function filterViewRows(rows, tab) {
 
 function ViewTabContent({
   stage,
+  sfBase,
   viewPoll,
   viewBusy,
   refreshError,
@@ -1076,6 +1174,9 @@ function ViewTabContent({
                 </th>
               ) : null}
               <th className="raw">device_id</th>
+              <th>Device</th>
+              <th>SKU</th>
+              <th>Category</th>
               <th>Sync status</th>
               <th>IDMS Status</th>
               <th>IDMS No</th>
@@ -1096,7 +1197,14 @@ function ViewTabContent({
                     />
                   </td>
                 ) : null}
-                <td className="mono">{row.deviceId}</td>
+                <td className="mono">
+                  <AssetLink assetId={row.assetId} baseUrl={sfBase}>
+                    {row.deviceId}
+                  </AssetLink>
+                </td>
+                <td className="small">{row.productName ?? '—'}</td>
+                <td className="mono small">{row.sku ?? '—'}</td>
+                <td className="mono small">{row.deviceCategory ?? '—'}</td>
                 <td>
                   {row.present ? (
                     <SyncStatusBadge status={row.syncStatus} />
@@ -1337,8 +1445,62 @@ function StateBadge({ state, running }) {
   return <Badge tone={tones[state] ?? 'muted'}>{state ?? 'idle'}</Badge>;
 }
 
-function ResultCard({ run, runId }) {
+/**
+ * Is the recorded verdict behind a newer settled reading of its own stage?
+ *
+ * A result is written once, when a poll settles, and then read for the life of the run — so it goes
+ * out of date the moment the devices it describes move on. This compares it against the snapshot
+ * for the very stage that wrote it: if that stage has since been re-read, has settled, and
+ * disagrees on the counts, then what is on screen is not what the org currently says.
+ *
+ * **Only the recorded stage is consulted**, and that is the point. A newer reading of some other
+ * stage is not evidence about this verdict — `supersedesRecordedResult` refuses to let an earlier
+ * stage overwrite a later one, so offering a reconcile the server would decline is worse than
+ * offering none. Re-polling the recorded stage is an equal-rank supersede, which is exactly the
+ * case that is allowed.
+ */
+function verdictBehindSnapshot(run) {
+  const stage = run?.result?.stage;
+  const finalisedAt = run?.result?.finalisedAt;
+  const snap = stage ? run?.polling?.[stage] : null;
+  if (!stage || !finalisedAt || !snap?.settled || !snap.lastPolledAt) return null;
+  if (new Date(snap.lastPolledAt) <= new Date(finalisedAt)) return null;
+
+  const verdictLoaded = run.result.loadedDeviceIds?.length ?? 0;
+  const verdictFailed = run.result.failedDeviceIds?.length ?? 0;
+  const nowSucceeded = snap.counts?.succeeded ?? 0;
+  const nowFailed = snap.counts?.failed ?? 0;
+  // Agreeing counts mean the verdict is merely older, not wrong. Nothing to reconcile.
+  if (nowSucceeded === verdictLoaded && nowFailed === verdictFailed) return null;
+
+  return { stage, polledAt: snap.lastPolledAt, nowSucceeded, nowFailed, verdictLoaded, verdictFailed };
+}
+
+function ResultCard({ run, runId, refreshRun, onError }) {
   const ids = run.result.loadedDeviceIds ?? [];
+  const behind = verdictBehindSnapshot(run);
+  const [recheckBusy, setRecheckBusy] = React.useState(false);
+
+  /**
+   * Re-read the stage that wrote this verdict, and let it revise it.
+   *
+   * This exists because the obvious route does not work: every asset-view tab polls `initialLoad`,
+   * so "Refresh from org" on Shipped Active cannot revise a verdict recorded by `shipmentUpdate` —
+   * the rank guard correctly refuses it. Rather than loosen that guard, the reconcile goes to the
+   * recorded stage directly, so the operator never has to know which tab secretly polls what.
+   */
+  const recheck = async () => {
+    setRecheckBusy(true);
+    try {
+      await api.pollOnce(runId, behind.stage, { finalise: true });
+      await refreshRun();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setRecheckBusy(false);
+    }
+  };
+
   return (
     <Sheet
       eyebrow={`Finalised ${new Date(run.result.finalisedAt).toLocaleString()}`}
@@ -1354,6 +1516,22 @@ function ResultCard({ run, runId }) {
         </>
       }
     >
+      {behind ? (
+        <Callout tone="warn" title="This verdict is older than the last reading">
+          It was finalised{' '}
+          <strong>{new Date(run.result.finalisedAt).toLocaleString()}</strong> and says{' '}
+          {behind.verdictLoaded} loaded, {behind.verdictFailed} failed. The last settled read of{' '}
+          <strong>{behind.stage}</strong>, at{' '}
+          <strong>{new Date(behind.polledAt).toLocaleString()}</strong>, found{' '}
+          {behind.nowSucceeded} succeeded and {behind.nowFailed} failed. Devices that were fixed
+          after this was written are still listed as failures below.
+          <div style={{ marginTop: '0.6rem' }}>
+            <button className="btn small" onClick={recheck} disabled={recheckBusy}>
+              {recheckBusy ? 'Re-checking…' : `Re-check against ${behind.stage}`}
+            </button>
+          </div>
+        </Callout>
+      ) : null}
       <p className="prose small">
         Reached{' '}
         <span className="mono">
