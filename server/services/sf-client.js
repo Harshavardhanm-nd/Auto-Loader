@@ -563,11 +563,15 @@ export async function findTakenDeviceIds(env, candidateIds) {
   return takenFromRecords(results.flat(), ids);
 }
 
+// `Product2.Name` is the device's human name — "Driveri D-211 100 Hours with CAN/ELD" — as opposed
+// to `Name`, which is the serial. Both halves are standard fields on a standard relationship, so
+// unlike a `__c` field they cannot go missing between sandboxes and take the whole SELECT with them
+// (which is precisely how `L1_Product_Family__c` once emptied the picker in staging).
 const FIELDS_FOR_WATCH = `Id, Name, Sync_Status__c, IDMS_Status__c, Status,
        Shipment_Tracking_Id__c, CPQ_Order__c, CPQ_Order__r.OrderNumber, SKU_Number__c,
        Service_Provider__c, Device_Category__c, OTA_Version__c, Shipped_to_3PL_Partner__c,
        NetSuite_PO_Number__c, Vendor_Invoice_Number__c, Received_Date__c, CreatedDate,
-       LastModifiedDate`;
+       LastModifiedDate, Product2.Name`;
 
 export async function fetchAssetsByDeviceId(env, deviceIds) {
   const ids = [...new Set(deviceIds.map(String))].filter(Boolean);
@@ -617,6 +621,7 @@ function shapeAsset(a) {
     cpqOrderId: a.CPQ_Order__c,
     cpqOrderNumber: a.CPQ_Order__r?.OrderNumber ?? null,
     sku: a.SKU_Number__c,
+    productName: a.Product2?.Name ?? null,
     serviceProvider: a.Service_Provider__c,
     deviceCategory: a.Device_Category__c,
     otaVersion: a.OTA_Version__c,
@@ -711,6 +716,12 @@ export function summarisePolling(stage, deviceIds, assets) {
         terminal: false,
         failed: false,
         stage: classifyStage(null),
+        // No Asset means nothing is known about the device, but the table still has these columns.
+        // Explicit nulls so "we looked and there is nothing" is distinguishable from a row shape
+        // that forgot the field.
+        productName: null,
+        sku: null,
+        deviceCategory: null,
       };
     }
     const reached = asset.syncStatus === expectation.success;
@@ -745,6 +756,11 @@ export function summarisePolling(stage, deviceIds, assets) {
       idmsStatus: asset.idmsStatus,
       assetStatus: asset.assetStatus,
       cpqOrderNumber: asset.cpqOrderNumber,
+      // What the device *is*, as opposed to where it is. Already fetched and already mapped by
+      // `shapeAsset`; carried onto the row so the Watch tables can name it.
+      productName: asset.productName ?? null,
+      sku: asset.sku ?? null,
+      deviceCategory: asset.deviceCategory ?? null,
       phase: asset.phase,
       // The numeric IDMS code placed on the DLCM chart. A device can be at the expected sync
       // status and still not have moved stage yet, so the two are reported separately.

@@ -806,6 +806,9 @@ export default function WatchPage({
                       </th>
                     ) : null}
                     <th className="raw">device_id</th>
+                    <th>Device</th>
+                    <th>SKU</th>
+                    <th>Category</th>
                     <th>Sync status</th>
                     <th>IDMS Status</th>
                     <th>IDMS No</th>
@@ -847,6 +850,12 @@ export default function WatchPage({
                               {row.deviceId}
                             </AssetLink>
                           </td>
+                          {/* What the device is, before where it is. The name is prose so it takes
+                              the normal face; SKU and category are literal org values and keep
+                              mono and their own case. */}
+                          <td className="small">{row.productName ?? '—'}</td>
+                          <td className="mono small">{row.sku ?? '—'}</td>
+                          <td className="mono small">{row.deviceCategory ?? '—'}</td>
                           <td>
                             {row.present ? (
                               <SyncStatusBadge status={row.syncStatus} />
@@ -875,6 +884,17 @@ export default function WatchPage({
                                   {acc.serialId}
                                 </AssetLink>
                               </td>
+                              {/* An accessory's "device name" is what kind of part it is. It used
+                                  to sit in the IDMS Status cell, which left that column meaning two
+                                  different things depending on the row; now it has a column of its
+                                  own and IDMS Status reads the same way as on the parent row. */}
+                              <td className="small">
+                                <span style={{ fontSize: '0.85rem', fontStyle: 'italic', color: 'var(--accent)' }}>
+                                  {acc.type}
+                                </span>
+                              </td>
+                              <td className="small faint">—</td>
+                              <td className="small faint">—</td>
                               <td>
                                 {acc.present ? (
                                   <SyncStatusBadge status={acc.syncStatus} />
@@ -883,9 +903,7 @@ export default function WatchPage({
                                 )}
                               </td>
                               <td className="small">
-                                <span style={{ fontSize: '0.85rem', fontStyle: 'italic', color: 'var(--accent)' }}>
-                                  {acc.type}
-                                </span>
+                                <IdmsStatusLabel stage={acc.stage} />
                               </td>
                               <td className="mono small">{acc.stage?.code ?? '—'}</td>
                               <td className="small">{acc.assetStatus ?? '—'}</td>
@@ -1152,6 +1170,9 @@ function ViewTabContent({
                 </th>
               ) : null}
               <th className="raw">device_id</th>
+              <th>Device</th>
+              <th>SKU</th>
+              <th>Category</th>
               <th>Sync status</th>
               <th>IDMS Status</th>
               <th>IDMS No</th>
@@ -1177,6 +1198,9 @@ function ViewTabContent({
                     {row.deviceId}
                   </AssetLink>
                 </td>
+                <td className="small">{row.productName ?? '—'}</td>
+                <td className="mono small">{row.sku ?? '—'}</td>
+                <td className="mono small">{row.deviceCategory ?? '—'}</td>
                 <td>
                   {row.present ? (
                     <SyncStatusBadge status={row.syncStatus} />

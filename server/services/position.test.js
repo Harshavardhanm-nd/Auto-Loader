@@ -65,3 +65,43 @@ describe('the stage split keeps the Asset id', () => {
     assert.equal(s.movedOn[0].assetId, null, 'an absent id must be explicit, not missing');
   });
 });
+
+/**
+ * Device information the Watch tables show.
+ *
+ * `FIELDS_FOR_WATCH` has always fetched these, and `shapeAsset` has always mapped them — but the
+ * polling row was built from eleven named fields and silently dropped the rest, so ten fetched
+ * columns never reached the browser. These three are the ones the tables now show; the assertion
+ * is here so a future row rewrite cannot quietly lose them again.
+ */
+describe('the polling row carries device information', () => {
+  const rich = (deviceId) => ({
+    deviceId,
+    syncStatus: 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS',
+    idmsStatus: -2,
+    id: 'a' + deviceId,
+    assetStatus: 'Purchased',
+    cpqOrderNumber: null,
+    phase: 'synced',
+    productName: 'Driveri D-211 100 Hours with CAN/ELD',
+    sku: 'K0E131EUKSI00YAS',
+    deviceCategory: 'NAMZ',
+  });
+
+  test('product name, SKU and category reach the row', () => {
+    const row = summarisePolling('initialLoad', ['1'], [rich('1')]).rows[0];
+    assert.equal(row.productName, 'Driveri D-211 100 Hours with CAN/ELD');
+    assert.equal(row.sku, 'K0E131EUKSI00YAS');
+    assert.equal(row.deviceCategory, 'NAMZ');
+  });
+
+  test('a device with no Asset yields null rather than undefined', () => {
+    // No matching asset at all — the row is the "absent" shape. The table renders an em dash for
+    // each, but the fields must be explicitly absent rather than merely missing.
+    const row = summarisePolling('initialLoad', ['9'], []).rows[0];
+    assert.equal(row.present, false);
+    assert.equal(row.productName, null);
+    assert.equal(row.sku, null);
+    assert.equal(row.deviceCategory, null);
+  });
+});
