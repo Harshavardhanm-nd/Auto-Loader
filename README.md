@@ -1,530 +1,433 @@
-# Auto Loader
+# Auto Loader — user guide
 
-A local app that replaces the manual CSV-and-email steps of the Netradyne device fulfilment
-flow. Pick product families, SKUs and quantities in a UI; the backend generates the
-byte-exact CSVs, emails each one to the right distribution list, watches Salesforce converge,
-and hands back the ids that were loaded.
+Auto Loader replaces the manual CSV-and-email steps of the Netradyne device fulfilment flow. You
+pick product families, SKUs and quantities; it generates the byte-exact CSVs, emails each one to
+the right distribution list, watches Salesforce until the devices appear, and hands back the ids
+that actually loaded.
 
-Built from two sources of truth:
+It runs on your own machine. There is no shared server and no deployment.
 
-- [`device-load-and-shipment-process.md`](./device-load-and-shipment-process.md) — the process
-  spec, describing the pipelines and the Salesforce side.
-- `~/BSG/DL Template/*.csv` — the 15 real template sheets. **Where these disagree with the
-  spec, the sheets win**, because they are what has actually been accepted. The disagreements
-  are listed at the bottom of this file.
+**The one thing to understand before you start:** this app cannot change anything in Salesforce
+directly. It only ever *reads*. The only way a device is created or moved is an email with a CSV
+attached, which an Apex email service on the Salesforce side parses. That is why the app is so
+particular about two things — **which mailbox a file goes to**, and **the exact bytes of the file**.
+Everything else it does is bookkeeping around those two facts.
 
-## Setup
+---
 
-```bash
-npm install                     # deps plus the Chromium that drives the Salesforce login
-npm run dev                     # server on :4317, UI on :5317 (opens automatically)
-```
+## Contents
 
-If `npm install` fails with `EACCES` on `~/.npm/_cacache`, your npm cache has root-owned files
-from an old npm bug. Fix it once with `sudo chown -R $(id -u):$(id -g) ~/.npm`, or install with
-a different cache: `npm install --cache /tmp/npm-cache`.
+- [Getting it running](#getting-it-running)
+- [The vocabulary](#the-vocabulary)
+- [Walkthrough: one run, start to finish](#walkthrough-one-run-start-to-finish)
+  1. [Connect](#1-connect)
+  2. [Setup](#2-setup)
+  3. [Families & SKUs](#3-families--skus)
+  4. [Ids](#4-ids)
+  5. [Review & send](#5-review--send)
+  6. [Watch](#6-watch)
+- [After the first load: chaining operations](#after-the-first-load-chaining-operations)
+- [When a third of the batch fails](#when-a-third-of-the-batch-fails)
+- [The other two screens](#the-other-two-screens)
+- [When something goes wrong](#when-something-goes-wrong)
+- [Things that will surprise you](#things-that-will-surprise-you)
+- [Where things live on disk](#where-things-live-on-disk)
+- [Further reading](#further-reading)
 
-```bash
-npm test                        # 81 tests: descriptor fidelity, byte contracts, allocation, DL routing
-npm run build && npm start      # single-process production mode on :4317
-```
+---
 
-## Credentials
-
-There are none in `.env`, by design.
-
-- **Salesforce** — you type your username and password into the app once and it drives a real
-  Chromium login. Only the resulting `sid` is persisted, to `data/sessions/<env>.json` at mode
-  0600.
-- **Mail** — nothing. Mail goes out through Outlook on the web, whose sign-in is a saved browser
-  session. See below.
-
-`data/` and `outlook-auth.json` are both gitignored.
-
-### You should only log in once
-
-Both sessions are saved locally and renew themselves. Nothing asks for credentials on a routine
-run.
-
-| | Saved to | Renews how |
-|---|---|---|
-| Salesforce | `data/sessions/<env>.json` (sid) + `data/browser/<env>/` (browser profile) | On any 401, the sid is silently re-minted from the profile and the call retried |
-| Outlook | `outlook-auth.json` in the project root | The saved session is reused directly; sends run headless against it |
-
-**Why Salesforce needs both files.** A `sid` is a session cookie that dies on the org's session
-timeout — a couple of hours. The browser profile's own trust lasts weeks. So when a sid expires
-there is normally no reason to ask for credentials again: opening the profile headless against the
-instance URL is enough for Salesforce to hand out a fresh one. That happens automatically inside
-the API client, which then retries the call — you never see it. Only when Salesforce actually
-presents a login form again (the profile itself has lapsed) does the app ask, and it says which of
-the two failed.
-
-Parallel calls all 401ing at once would each try to open the same profile directory, which Chromium
-locks exclusively, so the refresh is serialised per environment.
-
-Both files are written at mode 0600. On the Connect screen, **Renew now** forces a refresh, and
-**Forget this browser** drops the profile so the next login re-challenges for MFA.
-
-### Nothing is deleted when the app stops
-
-There is no shutdown handler. Stopping the server, rebooting, or leaving it for a week changes
-nothing on disk — every session artefact persists and is picked up on the next start.
-
-Session state is only ever removed by an explicit action:
-
-| Deleted by | What goes |
-|---|---|
-| **Disconnect** on the Connect screen | the Salesforce sid record |
-| **Forget this browser** | the Salesforce browser profile |
-| **Forget** on the Mail card | `outlook-auth.json` |
-| Deleting a run in History | that run's record and generated CSVs |
-
-Even an expiry keeps the record. When a sid dies and the silent refresh cannot renew it, the sid is
-nulled but the file stays, so the username, capture time and refresh count survive. That is what
-lets the Connect screen say *"session for you@netradyne.com expired — the remembered browser is
-still here, try Renew"* rather than the indistinguishable *"not connected"*. Deleting the file on
-every expiry would throw that away and make a routine timeout look like a first-time setup.
-
-## Mail: why not SMTP
-
-SMTP does not work in this tenant. It fails with:
-
-```
-535 5.7.139 Authentication unsuccessful, the request did not meet the criteria
-to be authenticated successfully. Contact your administrator.
-```
-
-`5.7.139` is Microsoft's specific code for **SMTP AUTH being disabled** on the tenant or the
-mailbox. It is not a wrong password, a wrong port, or a missing app password — basic auth for SMTP
-is switched off, and no credential will get past it. Re-enabling it means an admin running
-`Set-CASMailbox -SmtpClientAuthenticationDisabled $false` and turning off Security Defaults, which
-Microsoft has deprecated and most tenants will not do.
-
-So the default transport is **Outlook on the web**, driven in a browser window. It needs no app
-registration and no IT request. Microsoft Graph (`POST /me/sendMail`) would be the better
-engineering answer and is the thing to move to if an Azure app registration with `Mail.Send` ever
-becomes available; the transport is selected in one place (`config/environments.json` →
-`mail.transport`) so that swap is contained.
-
-**Not MCP.** An Outlook MCP server is available to Claude Code, not to this app — MCP tools live in
-the assistant's harness, and a standalone Node server has no MCP client. It could not send on its
-own, which is the whole point of automating the flow.
-
-### How sending works
-
-`mail.autoSend` is **false** by default, and that is deliberate. Outlook's DOM changes without
-notice and a wrong send here is a real device load in a real org. So the normal path is:
-
-1. **Compose in Outlook** — a visible window opens, fills To / Subject / body, attaches the CSV,
-   then **stops**. It refuses to continue if the CSV does not actually appear on the message: a
-   mail without its attachment is inert at the far end.
-2. You read it and press **Send** yourself.
-3. You click **"I've sent it"** and the app looks in **Sent Items** before recording anything. If
-   the message is not there it refuses to record the send, rather than let the run claim a load
-   that never happened and leave the polling screen waiting for assets that are not coming. There
-   is a "Record anyway" override for when you have confirmed it yourself.
-
-Once you have watched that produce the right message a few times, **Compose & send** does it all
-headless in one step — including the full Send-confirmation and Sent-Items wait.
-
-### Where the Outlook session lives
-
-`outlook-auth.json` in the project root, written on your first successful sign-in and reused
-silently after that. Gitignored, mode 0600.
-
-To borrow the working session from the QA repo instead of signing in at all:
+## Getting it running
 
 ```bash
-OUTLOOK_AUTH_STATE_PATH=~/BSG/bsg-qa-agent/outlook-auth.json npm run dev
+npm install     # dependencies, plus the Chromium that drives the Salesforce and Outlook logins
+npm run dev     # server on :4317, UI on :5317 — opens your browser automatically
 ```
 
-**Verified working** — that file authenticates and lands in the mailbox. Note it redirects to
-`outlook.cloud.microsoft`: Microsoft is migrating OWA off `outlook.office.com`, and this tenant has
-already moved. Sent Items is therefore resolved from whatever host the session actually lands on
-rather than a hardcoded one, so the verification step does not chase a redirect mid-poll.
+Use `npm run dev` while working: it restarts the server when you change a file. `npm start` (after
+`npm run build`) runs a single production process on :4317 and does **not** reload — if you edit
+code and nothing changes, that is usually why.
 
-### Where this came from
+If `npm install` fails with `EACCES` on `~/.npm/_cacache`, your npm cache has root-owned files from
+an old npm bug. Fix it once:
 
-The mechanics are taken from the working implementation in `~/BSG/bsg-qa-agent`
-(`services/outlook-email-service.js`, `services/outlook-session-manager.js`,
-`utils/helpers.js`) rather than invented. Things adopted from it that a first attempt gets wrong:
-
-| Detail | Why it matters |
-|---|---|
-| Saved **storage state**, not a browser profile | Sends run headless, and nothing contends with the Salesforce login for a profile lock |
-| Poll for OWA hydration (45s) | It renders its chrome seconds after `domcontentloaded`; one probe reports a good session as expired |
-| Distinguish a redirect from a real sign-in prompt | Microsoft routes through `login.microsoftonline.com` even for a silent sign-in |
-| Recipients are a contenteditable committed with `;` | Not an `<input>`, and an uncommitted address sends to nobody |
-| Try **every** `input[type=file]` | Outlook renders unrelated hidden ones |
-| Wait for Send to become *enabled* | Attachment processing disables it |
-| Handle the "Attachment reminder" dialog | It greys out Send behind a modal, so retries click a dead button forever |
-| Escalate Send selectors only while compose is open | A closed window means it already sent; clicking on sends a duplicate |
-| Confirm in **Sent Items**, up to 180s | See below |
-
-That last one is the important one. From a comment in the source repo: on 2026-08-01 a 1.16 MB
-report reported success and then appeared in **neither Sent Items nor Drafts** — the browser had
-been torn down while OWA was still transmitting. A vanished Send button is not proof of delivery;
-the compose window also closes when a message is discarded. So a send is only ever recorded after
-the message is found in Sent Items, and the browser is not closed before that resolves.
-
-### Attaching: how the first failure was diagnosed
-
-The first real run failed with `waitForEvent: Timeout 15000ms exceeded while waiting for event
-"filechooser"`. Probing the live compose window showed why, and it was not what the error suggested:
-
-```
-[compose open] file inputs (4):
-    {"accept":"image/*","multiple":true,"hidden":true}
-    {"accept":null,"multiple":true,"hidden":true}   ← this one works
-    …
-setInputFiles on input[0] → filename visible on message: true
-attachment chip elements:                           ← empty
+```bash
+sudo chown -R $(id -u):$(id -g) ~/.npm
 ```
 
-The attach was **succeeding**. The chip detector — looking for `[class*="attachment"]`,
-`.ms-attachment-filename`, `[data-testid="attachmentWell"]` — matched nothing on this OWA build, so
-the code concluded the attach had failed, discarded it, and fell through to the Attach-menu path.
-That path then timed out because on current OWA the Attach button opens a **menu**
-("Browse this computer") rather than a native file dialog, so waiting for a `filechooser` straight
-after clicking it never resolves.
+You need two accounts, and the app handles them differently:
 
-Both are fixed. Detection now leads with the filename text itself — the check that actually returned
-true — and is deliberately generous, because a false negative here is worse than a loose match: it
-throws away a working attach. The menu route now clicks the menu item before waiting for a chooser,
-and re-scans for file inputs afterwards.
-
-That fix was **wrong**, and the next run sent a mail with no CSV on it. Probing properly showed why:
-
-```
-input[0] accept=image/*  → filename found in 0 places        ← attaches NOTHING
-input[1] accept=any      → [role=listbox][aria-label="file attachments"]
-                             [role=option][aria-label="…csv Open 28 bytes"]
-```
-
-The four hidden file inputs are **not equivalent**. `input[0]` is the inline-image picker and
-silently discards a CSV. The code set the file there, the loose page-wide text search matched the
-name somewhere outside the compose surface, and it reported success with nothing attached.
-
-Two corrections:
-
-- **Image-only inputs are skipped outright**, rather than tried and hoped to fail loudly.
-- **Verification asks OWA**, not the page. The authoritative surface is the listbox it labels
-  "file attachments", whose options carry `aria-label="<filename> Open <size>"`. A page-wide text
-  match is exactly the kind of loose check that produced an empty send, so it is gone.
-
-There is now also a final gate immediately before Send: OWA must report **exactly one** CSV, named
-the one intended. An empty or duplicated send is unrecoverable at the far end — a CSV-less mail is
-treated as nothing while the run records a load that never happened.
-
-**Verified against the live mailbox**: `attachedVia: "file-input[1]"`, and Outlook itself reports
-`["Initial Load_VERIFY2.csv Open 65 bytes"]`. Nothing was sent.
-
-> **Sending itself is still unverified.** Composing is proven; pressing Send is not, because that
-> would be a real device load into a real org. The send path carries the source repo's hard-won
-> logic (wait for Send to become enabled, clear the Attachment-reminder dialog, escalate selectors
-> only while compose is open, confirm in Sent Items for up to 180s). A failed send writes a
-> screenshot plus Outlook's own banner text to `data/diagnostics/`.
-
-### How the login works
-
-**It logs in at each org's own domain, not `test.salesforce.com`.** That matters: the generic
-sandbox page does **not** show the SSO button, so logging in there always needed a manual
-detour. `loginUrl` now points at `netradyne--testing…` / `netradyne--staging…` directly, which
-also means the `sid` cookie lands on the correct host with no extra navigation.
-
-Both org pages were inspected directly and offer two ways in:
-
-| Method | What happens |
-|---|---|
-| **Username & password** (default) | The two-step Salesforce form — page one has *only* a username field and "Log In to Sandbox"; the password field appears after that submit. **Stays entirely inside Salesforce.** |
-| **SSO** | Clicks the org's SAML button (`#idp_section_buttons`) → **Microsoft Entra ID** (`login.microsoftonline.com`, tenant `b84f219a…`) |
-
-**The password form is the default because it is shorter.** The org login page carries it right
-next to the SSO button, so there is no reason to detour out to Microsoft and back for the same
-session. Verified: a password login never leaves
-`netradyne--testing.sandbox.my.salesforce.com`.
-
-SSO is kept for accounts that can only get in that way. On that path Netradyne credentials are
-optional — supply them and the Microsoft form is driven too, stopping at MFA; leave them blank and
-the browser is handed over.
-
-The driver does not follow a script — each cycle it looks at the page and takes whatever action
-is available. Orgs interleave SSO redirects, verification-method choosers, org pickers and "stay
-signed in?" prompts in orders no fixed sequence survives.
-
-On the default path it stops in exactly one place: **a verification code.** The code box in the UI
-activates, you enter it, and the driver resumes.
-
-On the SSO path it can additionally stop at a **push / number-match approval**, which is genuinely
-not automatable — it shows the number to enter and waits for you to approve on your phone, then
-carries on by itself.
-
-Three safety properties worth knowing, each protecting your account rather than the run:
-
-- **It will not submit an empty password.** The field is briefly unqueryable while a page renders,
-  and submitting in that window sends a blank password, which counts as a failed attempt — enough
-  of those lock the account. The driver requires the field to be absent across three consecutive
-  cycles before treating a page as username-only.
-- **A rejected Microsoft password is fatal, not retried.** Retrying against a corporate directory
-  is how accounts get locked, and an Entra lockout affects far more than this app. It reports
-  Microsoft's own message and stops.
-- **It never dead-ends.** If it cannot make progress for ~16s it says so, tells you which URL it
-  is stuck on, and keeps watching. A "paste a sid instead" box covers an SSO variant it cannot
-  drive at all.
-
-The browser profile persists per environment under `data/browser/<env>` (mode 0700, gitignored),
-so "remember this device" and Entra's "stay signed in" both survive — MFA is usually a one-off
-rather than every run. "Forget this browser" on the Connect screen drops it and forces a fresh
-challenge.
-
-A persistent profile can also hand back a **stale** `sid` from a previous session, so every
-captured cookie is proven with a live `Organization` query before being accepted. Otherwise you
-would get a session that looks connected and 401s on first real use.
-
-## What it covers
-
-**6 product families × 5 operations = 13 CSV formats**, each derived column-for-column from a
-real sheet:
-
-| Family | Operations | Cols | Mints |
-|---|---|---|---|
-| Driveri (Bagheera3) | initial load, shipment update | 28 | `device_id`, `sim_serial`, `device_imei` |
-| Octo (D-810) | initial load, **update load** | 32 | 5 numeric series + 2 pseudo-MACs |
-| Driveri Hub | initial load | 17 | `driveri_hub_id` |
-| DMS Camera | initial load | 17 | `Serial number` |
-| Haptic | initial load, shipment update, **data update** | 18 | `Serial number` |
-| VBUS | initial load | 16 | `serialNumber`, `macId` |
-| any | **received at 3PL** | 5 | — reuses a prior run's ids |
-| any | wizard upload (×2 variants) | 2 | — reuses a prior run's ids |
-
-**"Update load" is a separate operation from "shipment update."** The DL list names one mailbox
-*"Initial Load & Update Load DL"* and a different one *"Shipment Update DL"*, so an update load
-shares the initial-load address. `Octo Update Load NAZ110001.csv` is therefore classified as
-`updateLoad`, not `shipmentUpdate`. **Worth confirming** — if Octo's update load is really meant
-for the shipment-update mailbox, it is a one-word change in
-`templates/octo-update-load.json`.
-
-Accessories are not one format. DMS, Haptic, DHUB and VBUS are each their own template with
-their own column names, byte rules and numbering scheme. **Octo is different again**: it
-bundles its accessories *inline*, carrying wired-speaker and native-camera SKUs and serials in
-four extra columns, so it has no separate accessory file at all.
-
-## The flow
-
-| Screen | What it does |
-|---|---|
-| **Connect** | Salesforce + SMTP, and every mailbox this environment would send to |
-| **Setup** | Operation, tracking id, and an **optional** order |
-| **Families & SKUs** | Pick families and quantities; shows each template's shape, byte contract and the ids it will mint |
-| **Ids** | Every series' next value and the allocated blocks, with a "check availability" query |
-| **Review & send** | Per-family files, hex byte preview, the full checklist, then one send per family |
-| **Watch** | One row per unit, `*_SYNC_FAILED` surfaced immediately, polling continues server-side |
-| **History** | Every past run and the ids it loaded |
-
-Each family is its own CSV and its own email — every send carries exactly one attachment, so a
-Driveri batch and a Haptic batch cannot share a message even when they go to the same mailbox.
-
-## Still needed from you
-
-### 1. Three mailboxes, and four CSV formats
-
-Routing is otherwise complete in both environments. `✓` = sendable today.
-
-| Operation | Testing | Staging | Families with a template |
-|---|---|---|---|
-| Initial load | ✓ `Asset-Shipped-From-MFR-Testing@` | ✓ `assets_shipped_from_vvdn@…` | all six |
-| Shipment update | ✓ `Asset_Shipment_Update_Testing@` | ✓ `asset-shipment-update-from-mfr@…` | Driveri, Haptic |
-| Received at 3PL | ✓ `Asset-Received-At-3PL-Testing@` | ✓ `assets_received_at_3pl@…` | any |
-| Update load | ✓ *(shares initial load)* | **missing** | Octo |
-| Data update | **missing** | **missing** | Haptic |
-| Faulty returned to VVDN | ✓ `assets_returned_to_vvdn@…` | ✓ `assets_returned_to_vvdn@…` | **no template** |
-| Mark dead | ✓ `assets_non_repairable_at_repair_center@…` | ✓ `asset_markdead_emailservice@…` | **no template** |
-| Undo mark dead | **missing** | ✓ `asset_markundodead_emailservice@…` | **no template** |
-| Non-repairable at MFR | ✓ `Non-Repairable-Asset-At-MFR-Testing@` | **missing** | **no template** |
-
-**Three addresses to fill in:**
-
-- `dataUpdate`, both environments — `Haptic_Data_Update.csv` is a real format with nowhere to go.
-- `updateLoad`, staging — testing bundles it with initial load under one *"Initial Load & Update
-  Load DL"*, so the same address is plausible here, but I have not assumed it.
-- `nonRepairable`, staging, and `undoDead`, testing — each exists in one environment only.
-
-None of these are guessed. A wrong mailbox is a silent no-op or a double load, and the mailbox is
-the only thing that tells the parser which operation a file represents.
-
-**Four operations have a mailbox but no CSV format:** faulty-returned, mark-dead, undo-mark-dead
-and non-repairable. They are registered and routable, but no template sheet exists, so no run can
-select them. Send a sample of each and they become JSON drop-ins.
-
-### Two things to know about the Apex addresses
-
-Every staging address, and two of testing's, are Salesforce **Apex email service** addresses
-rather than netradyne.com mailboxes.
-
-**They change on sandbox refresh.** Each service gets a randomly generated subdomain under the
-org's host (`…cw-5p40juac.usa886s.apex.sandbox.salesforce.com` for staging). After any refresh,
-re-copy all of them from Setup › Email Services or sends will bounce.
-
-**Staging's mark-dead and undo-mark-dead differ only by the word "undo"**
-(`asset_markdead_emailservice` vs `asset_markundodead_emailservice`), on the same host pattern —
-two operations that reverse each other. This is precisely what the local-part match on every send
-exists to catch, and `npm test` asserts all of it: that the two are not interchangeable in either
-direction, that initial-load and shipment-update services are not interchangeable, that a correct
-local part on another service's host is refused, and that no address resolves the same in both
-environments.
-
-If a family needs a *different* mailbox from the shared one for an operation, add it under
-`distributionLists.byFamilyOperation` as `"vbus:initialLoad": { … }`; resolution prefers a
-family-specific entry and falls back to the operation-level one. The app shows which rule a
-send resolved through, since the mailbox is the only thing that distinguishes one operation
-from another.
-
-### 2. Sandbox endpoints — done
-
-Both are configured and were verified reachable:
-
-| Environment | Instance |
-|---|---|
-| Testing | `https://netradyne--testing.sandbox.my.salesforce.com` |
-| Staging | `https://netradyne--staging.sandbox.my.salesforce.com` |
-
-Both expose API versions 31.0–67.0, so the configured `v61.0` is valid on each. Neither URL
-carries a trailing slash — the REST path is appended directly and a double slash is rejected;
-a test enforces this.
-
-The spec's verified facts — the `Confirmed`-matches-nothing trap, the ~⅓ initial-load failure
-rate, the catalog counts — were all measured against **testing**. Staging is a different org, so
-re-run the spec's §6 and §8 queries there before trusting those numbers. The app does not depend
-on them (quantities come from `OrderItem`, statuses are read and never filtered on), but your
-expectations might. Testing only lacks the dataUpdate and
-received addresses.
-
-### 3. Two judgement calls worth confirming
-
-- **`haptic-shipment-update` date format.** That sheet writes `Manufacturing_Date` and the D2C
-  date as `DD/MM/YY` (`20/05/26`), while `Haptic_Initial_Load.csv` writes `YYYY-MM-DD` for the
-  same columns. The two sheets contradict each other and the column name says `YYYY-MM-DD`, so
-  the descriptor follows the column name. If the parser actually needs `DD/MM/YY`, set
-  `"dateFormat": "DD/MM/YY"` in `templates/haptic-shipment-update.json` — one line, no code.
-- **Which wizard upload.** Both `order_load.csv` (`SKU,Serial_Number`) and
-  `partner_order_load.csv` (`Device_Type,Serial_Number`) exist. The app generates the former;
-  `partner-order-load` is ready to use if that is the right one.
-
-## How output correctness is established
-
-`npm test` regenerates each real sheet from its descriptor and compares byte for byte:
-
-- **All 13 headers** match their source sheet exactly.
-- **All 13 byte contracts** match — BOM, line endings, trailing newline.
-- **Two whole files** (`Shipment Update Load_B3E110005.csv` and the 100-row
-  `VBUS_Initial_Load RTS120013.csv`) regenerate **byte-identical**, BOM and all.
-- The rest match on every row and column except documented defects in the source sheets, and
-  **each exclusion has its own test asserting the defect is real** so a sheet quirk cannot
-  quietly become a generator bug.
-
-### Defects found in the source sheets
-
-| Sheet | Defect | Handling |
+| | What it needs | Where the credentials go |
 |---|---|---|
-| `Initial Load_B3E110005.csv` | rows 6–10 have `system_pn`, `invoice_number`, `po_number` incrementing (`901-1-02282`→`02287`) | Excel autofill. A part number does not vary per unit — held constant |
-| `Octo Initial Load` / `Update Load` | row 1 has literal single spaces in six columns that later rows leave empty | written as empty |
-| `Octo Update Load` | accessory serials run …202, …201, …203 | hand-shuffled, not a sequence — emitted in order |
-| `Haptic_Data_Update.csv` | trailing row of bare commas | not reproduced |
-| `Haptic_Shipment_Update.csv` | dates as `DD/MM/YY` where the sibling sheet uses `YYYY-MM-DD` | follows the column name; see above |
+| **Salesforce** | username + password, and an MFA code when the org asks | typed into the Connect page, held in memory only, never written to disk |
+| **Outlook** | your normal work sign-in | typed into a browser window the app opens; the app never sees them |
 
-### Quirks preserved deliberately
+There are no credentials in `.env` or in any config file, and nothing to set up before your first
+run beyond `npm install`.
 
-- **`Wired_Speaker _SKU(required)`** — the Octo header really does have a space before `_SKU`.
-- **`DMS_IntialLoad {trackingId}.csv`** — "Initial" is misspelled in the source filename. Kept,
-  so generated files match what the mail parser has been receiving.
-- **Octo/Haptic tracking column vs filename** — those sheets carry `NA` in the tracking column
-  while the *filename* carries a real id. Modelled as two separate things.
-- **Haptic filenames carry no tracking id** at all.
+---
 
-## Where the spec and the real sheets disagree
+## The vocabulary
 
-| Spec says | Sheets show | App follows |
+Five words that appear everywhere and mean something specific here.
+
+**Run** — one trip through the flow, identified by a **tracking id** you choose. Everything is
+scoped to a run: the ids it minted, the files it built, the emails it sent, what Salesforce says
+about its devices.
+
+**Tracking id** — your own label for the batch, like `B3E110005`. It is *not* a Salesforce order
+number. You make it up; it just has to be something you will recognise later. Attaching a real
+order is optional and separate.
+
+**Operation** — which step of the device life cycle you are performing. The ones with a sheet you
+can send:
+
+| Operation | What it does |
+|---|---|
+| **Initial load** | Creates the Assets. This is where a device first exists in Salesforce. |
+| **Data update** | Corrects device data without moving the device. Only Octo and Haptic have a sheet for it, and **Octo must do it before shipping**. |
+| **Shipment update** | Marks the devices as shipped from the vendor. |
+| **Received at 3PL** | Records arrival at the third-party logistics partner. |
+| **RMA Returned** | A returned device coming back in. |
+| **DEAD** | Marks a device dead. Destructive — treat it as such. |
+| **Wizard upload** | The serials-only upload some flows need. |
+
+Four more (`Update load`, `Non-repairable at MFR`, `Faulty returned to VVDN`, `Undo mark dead`) have
+a mailbox configured but **no CSV sheet**, so the app shows you where they would go and refuses to
+generate a file. That is deliberate, not a missing feature.
+
+**Family** — the product line: Driveri, Octo, DHUB, DMS, Haptic, VBUS. **One family = one CSV = one
+email.** Two families never share a message, even when they route to the same mailbox.
+
+**Environment** — `testing` or `staging`, picked in the left rail. They are entirely separate
+Salesforce orgs with separate mailboxes, sessions and run histories. **Switching environments starts
+a new run**, deliberately: a ten-digit device id from testing looks exactly like one from staging,
+and mixing them is the mistake with the worst consequences.
+
+---
+
+## Walkthrough: one run, start to finish
+
+The left rail lists the steps in order and **unlocks them as you go** — Setup needs a Salesforce
+connection, Families & SKUs needs a tracking id, everything after that needs a run to exist. If a
+step looks greyed out, the answer is always "finish the one before it".
+
+The strip along the top (the **Runbar**) shows the same seven facts on every screen — environment,
+operation, tracking id, order, families, units, state — and starts as `—`. It doubles as your
+progress record; glance at it rather than trying to remember where you are.
+
+### 1. Connect
+
+Sign in to Salesforce and to Outlook.
+
+**Salesforce.** Type your username and password. The login runs invisibly in the background, and it
+is identifier-first: your username is submitted on its own, then the password on the next page. If
+the org asks to verify your identity, the page will say **awaiting MFA** and give you a box — type
+the code from your authenticator **into the app**, not into a browser window.
+
+If the app gets stuck on a screen it does not recognise, it offers to **show you the browser** so
+you can finish by hand. It also writes what it saw to `data/diagnostics/` — the page URL, title and
+visible controls, but never anything you typed.
+
+**Outlook.** Click sign in, and a real browser window opens. Log in as you normally would. The app
+never handles those credentials; it just reuses the session afterwards.
+
+**Read the mailbox table before your first send.** It lists every operation and the exact address
+this environment would send to. Any address showing as a placeholder blocks *that operation only* —
+the rest of the app still works. This table is the single best check that you are about to email
+the right place.
+
+Both sessions survive restarts, and the app checks whether they are still alive when it boots. A
+green card means "there is a saved session", which is not quite the same as "it still works" —
+hence the check.
+
+### 2. Setup
+
+Three things:
+
+- **Operation** — usually Initial load to begin with.
+- **`shipment_tracking_id`** — your batch label, e.g. `B3E110005`.
+- **Order number** — *optional*. Attaching one shows you the order's lines and how many serials it
+  expects, which is worth having. Leave it blank if you are not loading against an order.
+
+If you do attach an order, the page shows **Serialized lines**, **Serials the order needs** and
+**Non-serialized**. Note the second one: it is not the same as how many devices you are loading.
+Which brings us to the single most important rule in the app.
+
+> **Batch size and order quantity are different numbers.** How many devices you load is your
+> choice. How many serials the order expects is the order's business. Conflating them sets the
+> order to **Partially Shipped**, which hides the "Load Asset & Ship Order" button in Salesforce and
+> dead-ends the flow. The app will warn you; believe it.
+
+### 3. Families & SKUs
+
+Pick which products you are loading and how many of each.
+
+The catalog is read live from Salesforce and filtered to the products that belong to the family you
+picked. Each row shows a one-line description of what the product actually is, decoded from the SKU
+where possible and taken from the org's own classification otherwise.
+
+Two things to know:
+
+- **If the catalog fails to load, you get the error verbatim, not an empty list.** Salesforce
+  usually names the exact column or reason it refused, and that sentence is the whole diagnosis.
+  There is a Retry button.
+- **"Show all" is always available.** The per-family filter can go stale if the org renames a
+  product series, and showing too many SKUs only costs you a search — showing none would stop you
+  working. If a SKU you expect is missing, click Show all before assuming it is gone.
+
+Set a quantity per SKU. One run can carry several SKUs and several families at once; each family
+becomes its own file and its own email.
+
+### 4. Ids
+
+This is where device ids, sim serials, IMEIs and MAC addresses get allocated.
+
+Ids come from persisted counters, not random numbers, and they only ever move forward. The page
+shows each series' next value and the block it allocated for this run, and **checks every candidate
+against Salesforce before using it** — if an id is already taken, the counter steps past it.
+
+You will normally just look at this page and move on. Two things you may need:
+
+- **"Check availability"** re-runs the collision query without allocating anything.
+- **"Set to…"** moves a series' cursor by hand. This is the escape hatch for when the app's counters
+  and the org have drifted apart. It refuses to exceed the series' declared digit width.
+
+**Ids are minted once per run and reused by every later operation on the same devices.** A shipment
+update does not invent new ids — it would update nothing if it did.
+
+### 5. Review & send
+
+The screen that matters most. Check three things, in this order.
+
+**1. The destination mailbox.** It is the loudest thing on the page, and that is on purpose. It is
+the only visible marker of which operation a file represents, so it outranks the filename and the
+byte counts. Confirm it before anything else.
+
+**2. The row count.** It must equal the order's serialized quantity — see the Setup warning above.
+
+**3. The file itself.** You can preview the generated bytes as text or as a hex dump. The hex view
+is there because the things that break an Apex parser are invisible in a text view: a byte-order
+mark, the wrong line ending, a missing trailing newline. Each template declares its own contract and
+these legitimately differ between sheets, so do not "fix" one to match another.
+
+The page also runs a checklist and grades each item:
+
+- **Blocker** — sending is refused. Fix it.
+- **Warning** — you can proceed, and sometimes should. Stage checks are always warnings, because
+  the device's stage is written by another system and can change between the read and the send;
+  refusing on it would invent a new way to be stuck.
+
+Then send. **The button carries the whole lifecycle in place**, and the states are worth knowing:
+
+```
+Compose in Outlook  →  Working…  →  Awaiting your Send…  →  ✓ Sent
+```
+
+**`Awaiting your Send…` means the ball is in your court.** The app composes the message, attaches
+the file and fills in the recipient — then stops. **You press Send in Outlook.** The app keeps
+waiting, then confirms by finding the message in Sent Items.
+
+That last part matters: **a send is only recorded once the message is confirmed in Sent Items.** A
+composed-but-unsent message is not a send, and the app will not pretend otherwise. If you navigate
+away or restart the server with a compose window still open, the app remembers and offers to check
+Sent Items or discard the window — that state lives on the run, not on the screen.
+
+There is a **Send without review** button. It is deliberately drawn as a thin outline rather than a
+solid block, so it does not pull your eye away from the safe path. Use it when you already know
+exactly what you are sending.
+
+### 6. Watch
+
+Where you find out what Salesforce made of your file.
+
+Expect this to take a while, and expect failures. **Roughly a third of initial loads fail in this
+org.** That is ordinary, not a crisis, and the app treats a `*_SYNC_FAILED` status as final the
+moment it sees it rather than waiting out a timeout.
+
+The tab strip holds **two different kinds of thing**, and telling them apart saves confusion:
+
+**Stage tabs** — Initial load, Data update, Shipment update, Received at 3PL, RMA Returned. These
+are real polling targets. Each has its own server-side poll loop, its own snapshot, and start/stop
+controls. Polling continues on the server, so you can close the browser.
+
+**Asset views** — Shipped Active, Installed, RMA Pending, RMA Initiated, DEAD. These are read-only
+filters over the initial-load snapshot. They cannot be polled and have no data of their own. Two of
+them — RMA Initiated and DEAD — let you select devices, because those feed the RMA Returned and DEAD
+operations. DEAD sits last in the strip on purpose, away from the ordinary operations.
+
+**Selecting a tab re-reads Salesforce automatically.** It shows you the stored snapshot instantly,
+then quietly brings it up to date. If that background read fails you will see the rows plus
+`could not reach Salesforce · showing <time>` — that timestamp is the only thing separating fresh
+data from a silently stale read, so trust it over your assumptions.
+
+**A stage tab shows only the devices currently at that stage.** Devices that have moved further on
+are split out behind a notice saying where each one went, and there is always a way back to
+everything that was sent — that is the record of what your email carried, and it stays reachable.
+
+Every serial number in the table links to its Salesforce Asset, and the table names each device by
+its product name, SKU and category alongside the id.
+
+Once a stage settles, the **result card** shows the headline answer: which ids loaded. If that
+verdict is older than the last reading and disagrees with it, the card says so and offers to
+re-check — which is what you want after fixing a batch that partly failed.
+
+---
+
+## After the first load: chaining operations
+
+You do not start a new run for the next operation. **One run walks the whole chain, on the same
+ids, over a shrinking subset of its own devices.**
+
+When a stage settles, Watch offers the next operation over exactly the devices that succeeded. Tick
+the ones you want and it generates for that subset — no new ids, just a filter over the ones already
+minted. The devices that failed stay behind; the rest move on.
+
+The chain the operator actually walks:
+
+```
+(no Asset) --initial load--> Pre-Production --shipment update--> Shipped From Vendor
+           --received at 3PL--> New --> everything after this belongs to somebody else
+```
+
+**Octo takes a detour.** Octo owes a **data update** before its shipment update — it corrects device
+data at Pre-Production before shipping. Other families skip it. Watch routes an Octo selection to
+Data update rather than Shipment update, so you do not have to remember. Octo devices are also held
+back until their related accessories (wired speaker, native camera) have synced.
+
+---
+
+## When a third of the batch fails
+
+This is the normal case, so it is worth having a routine.
+
+1. **Read the failure on the Watch tab.** A device carrying `*_SYNC_FAILED` is finished failing —
+   nothing more will happen to it on its own.
+2. **Let the successes move on.** Tick them and take the hand-off to the next operation. A partly
+   failed load is not a dead end, and the ~⅔ that worked should not wait for the rest.
+3. **Deal with the failures separately.** Recovering a failed device currently means fixing it in
+   Salesforce — see the note below — and this app does not automate that.
+4. **Re-check the verdict.** After the failures are resolved, press **Refresh from org** on the
+   stage tab that recorded the verdict, and the run's headline answer updates. If you are on a
+   different tab, the result card will tell you which stage to re-check and offer a button.
+
+> **A device may not be loaded twice for the same operation.** The app compares the device ids in
+> the file against every send for that operation and family, and refuses a repeat. Sending half a
+> batch and then the other half is two legitimate emails and is allowed; sending the same devices
+> twice is not. When it cannot tell, it refuses — a blocked send is recoverable, a double load is
+> not.
+
+**On recovering a failed device:** in Salesforce the "Sync to IDMS" button appears on an Asset at
+Initial Load, Shipment Update or Received at 3PL that has not synced. For a device that has already
+failed, the manual route is to edit its `Sync_Status__c` back to the un-suffixed value, after which
+the button reappears. Automating that from this app was investigated and is currently blocked on a
+Salesforce permission (the Apex class behind the button is not granted to the `Operations` profile,
+though `Operations-India` has it). Until that changes, this step is manual.
+
+---
+
+## The other two screens
+
+**Life cycle** — the device stage chart: 14 stages keyed on the numeric `IDMS_Status__c`, with every
+operation placed on it. Click a stage to see what moves a device into and out of it. Useful for
+answering "where is this device and what happens next", and for seeing which arrows belong to this
+app versus the Installer App, the customer or the order integration. Five arrows were ambiguous on
+the source chart and are marked as such rather than guessed at.
+
+**History** — every past run and the ids it loaded, **scoped to the current environment**. Testing
+and staging histories are never interleaved, for the same reason switching environments starts a new
+run: the ids look identical and confusing them is expensive.
+
+---
+
+## When something goes wrong
+
+| What you see | What it means | What to do |
 |---|---|---|
-| Initial load is **LF** with a trailing newline | **CRLF**; trailing newline varies by sheet | the sheets, per template |
-| Wizard upload **requires** a BOM (`EF BB BF`) | `order_load.csv` has none; `partner_order_load.csv` does | each template's own bytes |
-| `sim_serial` == `device_imei` per row | three distinct series, offset by 10 | the sheets — no equality check |
-| `shipment_tracking_id` is the Salesforce OrderNumber | a separate tracking id (`B3E110005`, `RTS120011`) or literally `NA` | a user-supplied tracking id |
-| One initial-load format plus one accessory format | 6 families, 5 operations, 13 formats | all 13 |
-| 6 required columns in the 28-col format | 7 columns are marked `(required)` | the column names |
+| A step in the rail is greyed out | Its prerequisite is not done | Finish the previous step |
+| **awaiting MFA** on Connect | The org wants a verification code | Type the code from your authenticator into the app |
+| Salesforce login stalls on an unknown screen | The driver hit a page it does not recognise | Use the offer to show the browser; check `data/diagnostics/` for what it saw |
+| **expired, try Renew** | The saved session lapsed | Renew on Connect. Session records are emptied, not deleted, so the app can tell "expired" from "never connected" |
+| A pipeline has no mailbox | That operation's address is still a placeholder | Only that operation is blocked; the rest works |
+| Catalog shows an error with the exact text | Salesforce refused the query | Read it — it usually names the field or reason. Retry after fixing |
+| A SKU you expect is missing | The family filter may be stale | Click **Show all** |
+| Send refused as a duplicate | Those device ids already went for this operation and family | Check History. If it is genuinely a different set of devices, regenerate for that subset |
+| `*_SYNC_FAILED` on Watch | The Apex parser rejected that device. Final | Move the successes on; handle failures separately |
+| `could not reach Salesforce · showing <time>` | A background refresh failed; rows are from that time | Press **Refresh from org** |
+| Verdict says failures but devices look fine | The verdict predates the fix | Re-check from the stage that recorded it — the result card offers a button |
+| Outlook says "must have at least one recipient" | Two compose windows were open | Close both and send again. The app now refuses rather than guessing which window it filled |
+| You edited code and nothing changed | You are on `npm start`, which does not reload | Use `npm run dev` |
 
-All 15 sheets are CRLF and not one contains a bare LF. BOM presence and trailing newline vary
-*within* a single logical format, which is what you would expect if they just reflect whether a
-sheet was last saved by Excel ("CSV UTF-8" adds a BOM) or a plain editor — so neither is what
-the parser gates on. Each descriptor reproduces its own sheet's bytes regardless, so output is
-indistinguishable from a file already known to work.
+---
 
-## Other departures from the old automation
+## Things that will surprise you
 
-**Quantity comes from `OrderItem.Quantity`.** The old `packFactorFromSku()` read the digits
-after `USASI` as a pack size; they are option flags. For `K2I131USASI10FAS` it asked for 10
-devices where the order needed 1. Nothing here derives a count from a product code.
+Collected because each one has caught somebody out.
 
-**Two counts, modelled separately.** *Batch size* is how many units to load — free, it is a
-manufacturer batch. *Order quantity* is how many serials a wizard upload needs — fixed by the
-order. Uploading fewer sets the order to `Partially Shipped`, which hides the "Load Asset &
-Ship Order" button and dead-ends the flow, so the picker warns before you get there.
+- **You press Send, not the app.** By default it composes and stops. A composed message is not a
+  sent message and is never recorded as one.
+- **Salesforce is read-only from here.** Nothing this app does changes the org except an email.
+- **Ids are minted once per run** and reused by later operations. Never re-allocate for a subset.
+- **Never derive a quantity from a SKU.** SKU decoding is positional only. Batch size and order
+  quantity are separate counts, always.
+- **Byte contracts differ per template.** All the source sheets use CRLF, but the byte-order mark
+  and trailing newline vary *within* one logical format. Do not unify them.
+- **Switching environments starts a new run.** Not a bug — a guardrail.
+- **Polling runs on the server.** Close the browser; it keeps going.
+- **`Confirmed` is never used to find an order.** No order in these sandboxes has ever had that
+  status. It is displayed, never used as a filter.
+- **DEAD is destructive and sits apart from the other tabs** for that reason.
+- **Nothing here is wired to an AI model, deliberately** — not id generation, byte formatting,
+  quantity arithmetic, or the decision to send.
 
-**The order is optional.** An initial load does not have to relate to any order — the real
-sheets prove it, carrying tracking ids rather than order numbers.
+---
 
-**`*_SYNC_FAILED` is terminal.** Roughly a third of initial loads fail in this org. The old
-poller waited a flat 30 minutes at 20-second intervals before reporting a soft failure, so it
-said nothing for half an hour on a third of runs. Here failure ends the poll for that unit the
-moment it appears, and the first few polls are 5 seconds apart.
+## Where things live on disk
 
-**No order is ever found by `Status = 'Confirmed'`.** No Order in this sandbox has ever had
-that status; a finished order is `Activated`. Status is displayed and used for the
-`Partially Shipped` warning, never as a search filter.
-
-**Ids come from persisted counters, not a random reroll.** The old generator picked a random
-start and discarded the whole block if any member collided, up to 30 times. Here each
-(environment, template, series) has its own counter, so blocks are contiguous and auditable,
-and on collision it advances past the highest hit — every retry is forward progress. Series
-also refuse to overflow their declared digit width.
-
-**A send is not reported as success until it is in Sent Items.** Whichever transport is in use, the
-message is looked for in Sent Items before the run records it. When it cannot be confirmed the app
-says so rather than guessing either way — a blind retry is a double load.
-
-**Re-sending the same file to the same mailbox is blocked** unless explicitly forced, and
-re-sends use the bytes stored on disk rather than regenerating (which would allocate new ids).
-
-## Layout
+Everything is under `data/`, and nothing is deleted unless you ask.
 
 ```
-config/environments.json     per-env Salesforce endpoint + DL routing by operation and family
-config/profiles.json         Asset picklists and order-status facts
-templates/*.json            13 descriptors — columns, byte rules, series, filename, sources
-templates/README.md          descriptor schema and per-sheet quirks
-server/lib/bytes.js          BOM/CRLF/LF primitives, byte-contract assertions, hex dump
-server/lib/config.js         config + templates, DL resolution, placeholder detection
-server/services/
-  sf-session.js              Playwright MFA login, sid capture and storage
-  sf-client.js               all Salesforce reads; sync-status classification
-  sku-decoder.js             positional SKU decoding (no quantity inference)
-  id-generator.js            declarative multi-series allocation with persisted counters
-  csv-builder.js             template-driven generation and row planning
-  validator.js               pre-send checks, driven off descriptor rules
-  mailer.js                  transport dispatch, SMTP, .eml fallback
-  outlook-web-service.js     Outlook on the web: compose, attach, Sent Items confirmation
-  poller.js                  server-side polling loop
-  run-store.js               run persistence and generated bytes on disk
-  templates.test.js          round-trip fidelity against the real sheets
-server/routes/               auth, catalog, runs
-web/src/pages/               the seven screens
-data/                        runtime only, gitignored: sessions, counters, runs, output
+data/runs/<runId>.json        one file per run — ids, files, sends, snapshots
+data/output/<runId>/          the generated CSVs, under their real filenames
+data/counters.json            id cursors, keyed env:template:series
+data/sessions/<env>.json      Salesforce session (permissions 0600)
+data/browser/<env>/           the remembered browser profile (0700)
+data/diagnostics/             screenshots and page dumps from failed logins and sends
+outlook-auth.json             the Outlook session (0600)
 ```
 
-## Where a model would help, and where it must not
+Every step writes the run to disk as it happens, so a refresh, a restart or a session expiring
+mid-poll never loses ids that were already sent. **Those devices exist in Salesforce whether or not
+this app remembers them** — which is the whole reason the run file is written eagerly.
 
-Nothing here is wired to an LLM. If it is added later, the useful places are failure triage
-(explaining a `_SYNC_FAILED` in plain language), natural-language SKU search, and mapping a
-manufacturer's messy spreadsheet onto a template's columns for confirmation.
+Deleting a run removes its record here. It does **not** undo anything in Salesforce.
 
-Keep it out of id generation, byte formatting, quantity arithmetic, and the send decision.
-Those are a hard spec, and a hallucinated column ends the run.
+---
+
+## Further reading
+
+- [`CLAUDE.md`](./CLAUDE.md) — the architectural reference, maintained against the code. The most
+  current description of how anything works. Read this before changing code.
+- [`docs/design-notes.md`](./docs/design-notes.md) — build history: why sending goes through the
+  Outlook web UI rather than SMTP, how the attachment and login failures were diagnosed, which
+  source-sheet defects are reproduced deliberately.
+- [`templates/README.md`](./templates/README.md) — the descriptor schema and per-sheet quirks. Read
+  this to add a CSV format. Its counts are out of date; the descriptors themselves are authoritative.
+- [`device-load-and-shipment-process.md`](./device-load-and-shipment-process.md) — the original
+  process spec. **Where it disagrees with the real sheets, the sheets win** — they are what the Apex
+  parser has actually accepted.
+
+### For developers
+
+```bash
+npm test                       # the full suite
+node --test server/lib/lifecycle.test.js        # one file
+```
+
+Some tests currently fail for reasons that predate any change you are about to make — mostly stale
+assertions left behind by merges, plus seven descriptors naming a source sheet that is not in the
+template folder. **Read the "Test state" section of `CLAUDE.md` before debugging a failure**, so you
+can tell an inherited failure from one you caused.
+
+Note also that if the sheet folder (`~/BSG/DL Template`, override with `DL_TEMPLATE_DIR`) is
+missing, the byte-contract tests **self-skip and the suite reports green**. Check for `skipped` in
+the summary before trusting a pass.
