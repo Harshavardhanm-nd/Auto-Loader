@@ -156,7 +156,24 @@ export const CATALOG_FIELDS = [
   { api: 'Product_Series__c' },
   { api: 'Product_Category__c' },
   { api: 'L1_Product_Family__c' },
+  // Commercial "do not sell" flag. Optional, like every other custom field here: confirmed on
+  // Product2 in testing, unverified in staging, and SOQL is all-or-nothing on its SELECT list.
+  { api: 'Not_for_Sales__c' },
 ];
+
+/**
+ * The org's "not for sale" flag, as a tri-state.
+ *
+ * `null` means the org did not report the field — not that the product is sellable. A checkbox
+ * Salesforce did not return is unknown, and an unknown must never manufacture a conclusion; the
+ * sellability filter hides nothing in that case rather than claiming everything is sellable.
+ *
+ * @returns {boolean|null}
+ */
+export function notForSaleFrom(record) {
+  const value = record?.Not_for_Sales__c;
+  return value === true || value === false ? value : null;
+}
 
 /**
  * The `Product_Series__c IN (…)` values, or none.
@@ -261,6 +278,9 @@ export async function fetchSerializedCatalog(env, { includeSeries = [] } = {}) {
     // Haptic's module says No while its sheet loads generated serials — so it is reported rather
     // than assumed.
     serialized: p.Product_Serialized__c === 'Yes',
+    // Commercial flag, not a fulfilment one: VDI2L001 — the SKU on the real accepted VBUS sheet —
+    // carries `true`, as do all ten refurbished `-R` D210 codes. Reported, never acted on here.
+    notForSale: notForSaleFrom(p),
     // Family = 'Hardware' is the device population; everything else serialized is treated
     // as an accessory by the picker.
     kind: p.Family === 'Hardware' ? 'device' : 'accessory',

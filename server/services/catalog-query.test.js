@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCatalogSoql, CATALOG_FIELDS } from './sf-client.js';
+import { buildCatalogSoql, CATALOG_FIELDS, notForSaleFrom } from './sf-client.js';
 
 /**
  * The catalog query, built against the fields the org actually has.
@@ -117,5 +117,53 @@ describe('series values reaching the query', () => {
   test('only unsafe values are dropped, not the whole clause', () => {
     const soql = buildCatalogSoql({ availableFields: TESTING, includeSeries: ['D810', 'DHUB'] });
     assert.ok(soql.includes("Product_Series__c IN ('D810','DHUB')"));
+  });
+});
+
+describe('the Not-for-Sale flag is optional, like every other custom field', () => {
+  test('it is named when the org reports it', () => {
+    const soql = buildCatalogSoql({ availableFields: TESTING, includeSeries: SERIES });
+    assert.ok(soql.includes('Not_for_Sales__c'), 'testing has the field, so it must be selected');
+  });
+
+  test('it is not named when the org does not report it', () => {
+    // The whole point: SOQL is all-or-nothing on its SELECT list. Naming a field staging may not
+    // have would fail the entire catalog query, which is the L1_Product_Family__c outage again.
+    const without = TESTING.filter((f) => f !== 'Not_for_Sales__c');
+    const soql = buildCatalogSoql({ availableFields: without, includeSeries: SERIES });
+    assert.equal(soql.includes('Not_for_Sales__c'), false);
+  });
+
+  test('its absence leaves the serialized gate and the series widening intact', () => {
+    const without = TESTING.filter((f) => f !== 'Not_for_Sales__c');
+    const soql = buildCatalogSoql({ availableFields: without, includeSeries: SERIES });
+    assert.ok(soql.includes("Product_Serialized__c = 'Yes'"), 'serialized gate survives');
+    assert.ok(
+      soql.includes("Product_Series__c IN ('D810','DHUB','DMS','VBUS','HAPTIC')"),
+      'series widening survives'
+    );
+    assert.ok(soql.includes('IsActive = true'), 'the active filter is never dropped');
+  });
+
+  test('it is never used as a WHERE clause — filtering happens in memory', () => {
+    // Sellability is filtered in `catalog-filter.js` so the toggle costs no query. If this ever
+    // moves into SOQL, the cache key has to grow and the toggle becomes a round trip.
+    const soql = buildCatalogSoql({ availableFields: TESTING, includeSeries: SERIES });
+    assert.equal(/WHERE[\s\S]*Not_for_Sales__c/.test(soql), false);
+  });
+});
+
+describe('reading the Not-for-Sale flag off a record', () => {
+  test('true and false pass through', () => {
+    assert.equal(notForSaleFrom({ Not_for_Sales__c: true }), true);
+    assert.equal(notForSaleFrom({ Not_for_Sales__c: false }), false);
+  });
+
+  test('a record without the field reads as null, not false', () => {
+    // The field was not in the SELECT because the org does not have it. "Unknown" must never be
+    // reported as "sellable" — the same rule positionInChain follows for an unplaceable status.
+    assert.equal(notForSaleFrom({}), null);
+    assert.equal(notForSaleFrom({ Not_for_Sales__c: null }), null);
+    assert.equal(notForSaleFrom(undefined), null);
   });
 });
