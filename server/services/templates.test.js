@@ -36,8 +36,20 @@ function readSheet(file) {
 /**
  * Build rows for a template using its own sampleStart values, so a regeneration reproduces
  * the source sheet rather than the next block the counter would hand out.
+ *
+ * The row carries a `line` because `sku_number` reads `line.sku`, not `field.sku_number` —
+ * changed in `33792d3` so one run can carry several SKUs. The SKU comes from the descriptor's
+ * own `defaults.sku_number`, which is what that column read before the change and is therefore
+ * the value its sheet was written with. Deliberately *not* read out of the source sheet: the
+ * round-trip compares against that sheet, so copying the SKU from it would retire the
+ * `sku_number` column from verification instead of testing it. Sourced from the descriptor, a
+ * default that drifts from its sheet shows up as a column mismatch.
+ *
+ * A descriptor that reads `line.sku` but declares no default gets no `sku`, and `buildCsv`
+ * refuses it by name — the fixture does not invent a SKU to get a row built.
  */
-function rowsFromSamples(template, count) {
+function rowsFromSamples(template, count, line = {}) {
+  const sku = line.sku ?? template.defaults?.sku_number;
   return Array.from({ length: count }, (_, i) => {
     const generated = {};
     for (const [name, def] of Object.entries(template.series ?? {})) {
@@ -47,7 +59,7 @@ function rowsFromSamples(template, count) {
           ? `${def.prefix}${n}`
           : String(n).padStart(def.digits ?? 0, '0');
     }
-    return { generated, line: {} };
+    return { generated, line: sku === undefined ? { ...line } : { ...line, sku } };
   });
 }
 
@@ -213,7 +225,11 @@ test('the whole Driveri shipment-update sheet is byte-identical', { skip: !haveS
   });
 
   assert.equal(artifact.buffer.toString('hex'), raw.toString('hex'));
-  assert.equal(artifact.filename, 'Shipment Update Load_B3E110005.csv');
+  // The bytes reproduce the sheet; the *name* deliberately does not. `33792d3` standardised
+  // generated filenames on <Operation>_<Family>_{trackingId}.csv, so the descriptor declares
+  // Shipment_Update_Driveri_{trackingId}.csv rather than the sheet's own name.
+  assert.equal(artifact.filename, 'Shipment_Update_Driveri_B3E110005.csv');
+  assert.equal(template.filenamePattern, 'Shipment_Update_Driveri_{trackingId}.csv');
 });
 
 test('the whole VBUS sheet is byte-identical across all 100 rows', { skip: !haveSheets && 'DL Template folder not found' }, () => {
