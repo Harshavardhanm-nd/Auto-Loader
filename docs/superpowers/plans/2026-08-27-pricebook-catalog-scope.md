@@ -626,10 +626,10 @@ In `server/routes/catalog.js`, add to the `sf-client.js` import block:
 and replace the `catalog-filter.js` import:
 
 ```javascript
-import { filterCatalogByFamily, declaredSeries, scopeCatalog } from '../services/catalog-filter.js';
+import { declaredSeries, scopeCatalog } from '../services/catalog-filter.js';
 ```
 
-`filterCatalogByFamily` stays imported — `/families` may still use it; leave that import in place even if `/products` no longer calls it directly.
+**`filterCatalogByFamily` is dropped from this import.** Verified 2026-08-27: its only call site in this file is line 49, inside `/products`, and `scopeCatalog` now calls it internally. `/families` does not use it. Leaving it imported would be dead code.
 
 - [ ] **Step 2: Add the two caches**
 
