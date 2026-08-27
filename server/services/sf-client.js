@@ -294,6 +294,61 @@ export async function fetchSerializedCatalog(env, { includeSeries = [] } = {}) {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Pricebooks
+// ---------------------------------------------------------------------------
+
+/**
+ * A Salesforce id: 15 or 18 alphanumeric characters, nothing else.
+ *
+ * `pricebookId` arrives from an HTTP query string and is interpolated into SOQL, so it is validated
+ * rather than escaped — the same call `safeSeries` makes for config-supplied series names. A value
+ * carrying a quote or a backslash is refused outright.
+ */
+export function isSalesforceId(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$/.test(value);
+}
+
+/**
+ * Which products are in one pricebook.
+ *
+ * `Product2Id` only, deliberately: this is a membership probe, and the product fields are already
+ * in the per-env catalog. An id-only projection keeps the URL far inside `QUERY_URL_LIMIT` even for
+ * a book with thousands of entries, and `query()` pages through the rest.
+ */
+export function buildPricebookEntrySoql(pricebookId) {
+  if (!isSalesforceId(pricebookId)) {
+    throw new Error(`Pricebook "${pricebookId}" is not a Salesforce id (15 or 18 alphanumerics).`);
+  }
+  return (
+    `SELECT Product2Id\n` +
+    `  FROM PricebookEntry\n` +
+    ` WHERE Pricebook2Id = '${pricebookId}'\n` +
+    `   AND IsActive = true`
+  );
+}
+
+/**
+ * The pricebooks worth offering: active only, standard first.
+ *
+ * Testing holds 24 books, 6 of them inactive (`netradyne`, `Trial`, `Safety Price Book`,
+ * `Security Price Book`, `Partner Price Book - TruckSpy`, `Non-Bundled Items`). An inactive book
+ * cannot be sold from, so offering it would only invite a pointless narrowing.
+ */
+export async function fetchPricebooks(env) {
+  const records = await query(
+    env,
+    `SELECT Id, Name, IsStandard\n  FROM Pricebook2\n WHERE IsActive = true\n ORDER BY IsStandard DESC, Name`
+  );
+  return records.map((p) => ({ id: p.Id, name: p.Name, isStandard: p.IsStandard === true }));
+}
+
+/** The Product2 ids in one pricebook, as a Set for the in-memory intersection. */
+export async function fetchPricebookProductIds(env, pricebookId) {
+  const records = await query(env, buildPricebookEntrySoql(pricebookId));
+  return new Set(records.map((r) => r.Product2Id).filter(Boolean));
+}
+
 export function searchCatalog(catalog, queryText, { kind = null, limit = 100 } = {}) {
   return catalog
     .filter((p) => (kind ? p.kind === kind : true))
