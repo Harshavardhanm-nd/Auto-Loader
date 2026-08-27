@@ -16,12 +16,14 @@ and the CSV bytes are the two things the code guards hardest.
 
 This file was accurate at `e5c790d`. Five merges landed after it (the Octo, RMA Returned and DEAD
 work, `b78af52`…`20912a9`) without updating the tests or the docs, and the sections below have been
-re-checked against `20912a9`. Two of the app's own safety mechanisms are currently not doing their
+re-checked against `e463c10`, the current HEAD. Two of the app's own safety mechanisms are currently not doing their
 job. Neither will announce itself, so know about them before you change anything nearby:
 
-1. **16 of 19 templates have no byte-level verification** — seven point at source sheets that do not
-   exist, ten fail on a stale test helper. Any change to `csv-builder.js` or a descriptor is
-   unverified. See "Test state".
+1. **10 of 19 templates have no byte-level verification** — seven point at source sheets that do
+   not exist, `device-dead` names no sheet at all, and `received-load` + `octo-data-update` have
+   header/byte checks but no row-level round-trip. Changes to `csv-builder.js` reaching *those*
+   descriptors are unverified. The other nine are covered — `rowsFromSamples` was repaired on
+   2026-08-27. See "Test state".
 2. **`faultyReturned` and `rmaReturned` route to the identical testing mailbox**, and no test catches
    it because the assertion that would throws earlier. See "Routing".
 
@@ -32,8 +34,8 @@ disabling that reasoning for `shipmentUpdate` and `received`. **Fixed 2026-08-15
 `dataUpdate` into `stageSteps` and adding `pollingOrder()` — see "The device life cycle lives in
 `config/lifecycle.json`" below for where the model lives now.
 
-The counts in this file (19 descriptors, 26 transitions, 261 tests) are what the repo actually holds;
-`README.md` and `templates/README.md` still describe 13 templates and are not reliable on numbers.
+The counts in this file (19 descriptors, 26 transitions, 317 tests in 16 files) are what the repo
+actually holds; `templates/README.md` still describes 13 templates and is not reliable on numbers.
 
 ## Commands
 
@@ -41,7 +43,7 @@ The counts in this file (19 descriptors, 26 transitions, 261 tests) are what the
 npm install                  # deps + the Chromium that drives the Salesforce/Outlook logins
 npm run dev                  # server :4317 (node --watch) + Vite UI :5317 (proxies /api), opens browser
 npm run dev:server           # server only
-npm test                     # 261 tests in 12 files — see "Test state" below, 39 currently fail
+npm test                     # 317 tests in 16 files — see "Test state" below, 27 currently fail
 npm run build && npm start   # single-process production mode on :4317 (Express serves dist/)
 ```
 
@@ -52,25 +54,31 @@ node --test server/lib/config.test.js                # 18 tests, 12 pass / 6 fai
 node --test server/lib/lifecycle.test.js              # 51 tests, 51 pass / 0 fail — stage graph, classify, next-step
 node --test server/lib/stage-steps.test.js            # 19 tests, 19 pass / 0 fail — operationChain, pollingOrder, operationOrder, requiredStepsBefore
 node --test server/lib/stage-steps-shape.test.js      # 2 tests, 2 pass / 0 fail — stageSteps shape guard
-node --test server/services/templates.test.js         # 84 tests, 51 pass / 33 fail
-node --test server/services/catalog-filter.test.js    # 34 tests, 34 pass / 0 fail — family/series picker rules
-node --test server/services/catalog-query.test.js     # 12 tests, 12 pass / 0 fail — catalog SOQL vs. the org's own fields
+node --test server/services/templates.test.js         # 84 tests, 63 pass / 21 fail
+node --test server/services/catalog-filter.test.js    # 47 tests, 47 pass / 0 fail — family/series rules, pricebook + sellability narrowing
+node --test server/services/catalog-query.test.js     # 18 tests, 18 pass / 0 fail — catalog SOQL vs. the org's own fields
+node --test server/services/pricebook-query.test.js   # 6 tests, 6 pass / 0 fail — membership SOQL, Salesforce-id validation
 node --test server/services/product-description.test.js # 12 tests, 12 pass / 0 fail — the picker's one-line 'what is this'
 node --test server/services/collision-fields.test.js  # 8 tests, 8 pass / 0 fail — every minted series has a mapped collision field
 node --test server/services/collision-query.test.js   # 12 tests, 12 pass / 0 fail — one field per query, chunk size, URL budget
 node --test server/services/outlook-compose.test.js    # 5 tests, 5 pass / 0 fail — compose-open retry: use / retry / ambiguous
-node --test server/services/position.test.js          # 4 tests, 4 pass / 0 fail — ahead/behind/at against pollingOrder
+node --test server/services/position.test.js          # 9 tests, 9 pass / 0 fail — ahead/behind/at against pollingOrder
+node --test server/services/poller-result.test.js     # 12 tests, 12 pass / 0 fail — settle/verdict scoring, stale-verdict reconcile
+node --test server/routes/dead-device-type.test.js    # 5 tests, 5 pass / 0 fail — every family resolves to a DEAD_DEVICE_TYPES value
+node --test server/services/accessory-enrichment.test.js # 9 tests, 9 pass / 0 fail — accessory serial gathering, row decoration
 node --test --test-name-pattern "byte contract" server/services/templates.test.js
 ```
 
 Node's runner prints its tallies with an `ℹ` prefix (`ℹ tests 69`), not TAP `#`, so grep for `ℹ`.
 
-### Test state — 39 failures are pre-existing, not yours
+### Test state — 27 failures are pre-existing, not yours
 
-**Two of the twelve test files currently fail: `config.test.js` and `templates.test.js`.**
+**Two of the sixteen test files currently fail: `config.test.js` and `templates.test.js`.**
 `lifecycle.test.js`, `stage-steps.test.js`, `stage-steps-shape.test.js`, `catalog-filter.test.js`,
-`catalog-query.test.js`, `product-description.test.js`, `collision-fields.test.js`,
-`collision-query.test.js`, `position.test.js` and `outlook-compose.test.js` are green. The suite was last green as a whole at
+`catalog-query.test.js`, `pricebook-query.test.js`, `product-description.test.js`,
+`collision-fields.test.js`,
+`collision-query.test.js`, `position.test.js`, `poller-result.test.js`, `dead-device-type.test.js`
+and `outlook-compose.test.js` are green. The suite was last green as a whole at
 `e5c790d`; the five merges after it (`b78af52`…`20912a9`, the Octo/RMA/DEAD work) broke it and the
 tests were not updated. `lifecycle.test.js`'s 6 failures were the one exception: they were reporting
 a real app defect, not a stale assertion, until the stage-step work fixed it on 2026-08-15 — see
@@ -111,23 +119,46 @@ declares **no `sourceTemplate` at all** yet carries `status: "verified"` — it 
 against a real sheet, so "verified" overstates it. The skip guard is **folder-level only**: a
 missing individual sheet is not skipped.
 
-**3. `templates.test.js` — the remaining failures: the harness never caught up with `line.sku`.**
-`rowsFromSamples` (line 39) builds rows as `{ generated, line: {} }`, but 14 descriptors read
-`sku_number` from `line.sku`. Every round-trip and builder test using that helper throws
-`Template column "sku_number": line.sku is not available`. Production is unaffected —
-`planGeneratedRows`/`planWizardRows` attach the real line. One more stale test rides along here:
-`every filename placeholder is one the builder can fill` asserts `p === 'trackingId'`, but
-`renderFilename` has supported `{family}` since `33792d3`. It fails on `device-dead` (alphabetically
-first) and so never reaches `received-load`, which uses `{family}` legitimately.
+**3. `templates.test.js` — three stale assertions, down from 17. Fixed 2026-08-27.**
+`rowsFromSamples` built rows as `{ generated, line: {} }`, but 15 descriptors read `sku_number`
+(or `SKU`) from `line.sku` rather than `field.sku_number` — changed in `33792d3` so one run can
+carry several SKUs. Every round-trip and builder test using the helper threw
+`Template column "sku_number": line.sku is not available`. Production was never affected:
+`planGeneratedRows`/`planWizardRows` attach the real line.
 
-**Only 3 of the 19 descriptors now have complete byte-level verification** — `haptic-data-update`,
-`order-load` and `partner-order-load`. It was 4 of 16; `received-load` lost its round-trip test to
-bucket 3. **Treat any change to `csv-builder.js` or a descriptor as unverified**, and prefer fixing
-`rowsFromSamples` first — one helper restores coverage on ten descriptors at once.
+The helper now attaches `line.sku` from the descriptor's own `defaults.sku_number` — the value that
+column read *before* `33792d3`, and therefore the SKU its sheet was written with. Verified
+empirically: it equals the sheet's `sku_number` column for all seven round-trip descriptors whose
+sheet exists. **Do not "fix" this by reading the SKU out of the source sheet** — the round-trip
+compares against that sheet, so sourcing the expected value from it would retire the `sku_number`
+column from verification instead of testing it. A third argument (`line`) lets a caller override.
+A descriptor with no `defaults.sku_number` gets no `sku`, and `buildCsv` refuses it by name.
+
+Three stale assertions remain, each independent of the helper and each previously *masked* by it:
+
+- `every filename placeholder is one the builder can fill` asserts `p === 'trackingId'`, but
+  `renderFilename` has supported `{family}` since `33792d3`. It fails on `device-dead`
+  (alphabetically first) and so never reaches `received-load`, which uses `{family}` legitimately.
+- `received-load consumes existing device ids` calls `buildCsv` without a `family` argument, so
+  `Received_At_3PL_{family}_{trackingId}.csv` cannot be rendered — `Filename pattern needs a value
+  for {family}`. The test predates `{family}` in that pattern.
+- `allocates one contiguous block per declared series` fails `10 !== 9` — an id-allocation count,
+  unrelated to templates. Not yet diagnosed.
+
+A fourth was fixed alongside the helper: the whole-file Driveri byte test asserted the *sheet's*
+name, `Shipment Update Load_B3E110005.csv`, while the descriptor declares
+`Shipment_Update_Driveri_{trackingId}.csv` per `33792d3`. Its hex comparison had been passing all
+along; only the filename line failed.
+
+**9 of the 19 descriptors now have complete byte-level verification** — `driveri-initial-load`,
+`driveri-shipment-update`, `dhub-initial-load`, `dms-initial-load`, `haptic-initial-load`,
+`haptic-shipment-update`, `vbus-initial-load`, `order-load` and `partner-order-load`. It was 3.
+`haptic-data-update` and `received-load` have header + byte checks but no row-level round-trip; the
+remaining eight cannot be verified until their `sourceTemplate` is corrected (bucket 2).
 
 Also check for `skipped` in the summary: on a machine without the sheet folder the whole suite
 self-skips and reports green. Node counts `describe` blocks alongside tests in its `✖` list, so the
-failing-name list looks longer than 39.
+failing-name list looks longer than 27.
 
 ## Architecture
 
@@ -162,6 +193,13 @@ stages eggplant, which is also what the two account types mean.
 Shared document primitives are in `web/src/components/ui.jsx`: `PageHead` (step marker, title,
 double rule), `Sheet` (panel with a ruled head, `live` adds the polling scanline), `Segmented`
 (every "pick one of these"), `KeyValue`, `Explainer`, plus `Badge` / `Callout` / `Stat` / `Field`.
+
+`Segmented` is for small mutually-exclusive sets **this app defines** — families, operations, view
+tabs. A long list the **org** supplies gets a native `<select>`: the picker's price book is 18
+entries with names like `Partner Price Book - Teletrac North America`, which a row of buttons cannot
+carry. `select` is already styled in `styles.css` alongside the text inputs, so this costs no CSS,
+and it belongs inside a `Field`. The org's own value renders verbatim — `Standard Price Book` keeps
+its case and never becomes a `Sheet` eyebrow.
 
 **Explanation folds; state does not.** Every screen's reasoning lives in an `<Explainer>` — a native
 `<details>`, closed by default, **at most one per panel**. Native because it needs no state and the
@@ -299,7 +337,7 @@ operation on the same devices — a shipment update that invented fresh ids woul
 `POST /:id/generate` accepts an optional `deviceIds` array, and every row planner honours it —
 generated rows are filtered on their primary series, existing-device rows on the id itself. The
 Watch page is what produces those subsets: it polls a stage, then offers the *next* operation over
-exactly the rows that settled. The eligibility filters live in `WatchPage.jsx:212-290`:
+exactly the rows that settled. The eligibility filters live in `WatchPage.jsx` around `eligibleRows` (~330-395):
 
 ```
 initialLoad polled    → IDMS -2 + INITIAL_DEVICE_LOAD_SYNC_SUCCESS or DATA_UPDATE_SYNC_SUCCESS,
@@ -315,7 +353,7 @@ Note the first two lines: since `73fe338` a device may reach shipment-update eli
 *either* initial load or data update — the point of the Octo detour, since Octo needs the data
 correction before shipping and other families skip it. Requiring the device to specifically carry
 `DATA_UPDATE_SYNC_SUCCESS`, rather than either status, is scoped to `stage === 'dataUpdate'` alone
-(`WatchPage.jsx:265`). Applying it on the initial-load tab too — which is what the plan first
+(`WatchPage.jsx:349`). Applying it on the initial-load tab too — which is what the plan first
 specified — leaves an Octo run with zero eligible rows there: those devices carry
 `INITIAL_DEVICE_LOAD_SYNC_SUCCESS`, not the data-update status, and `eligibleRows` gates the
 selection checkboxes, so no eligible rows means no way to select anything and no hand-off at all.
@@ -339,7 +377,7 @@ Watch shows two categorically different things in one tab strip, and confusing t
   server-side poll loop, their own snapshot on the run, start/stop/once controls, and the
   ahead/behind split.
 - **Asset-view tabs** — `Shipped Active`, `Installed`, `RMA Pending`, `RMA Initiated`, `DEAD`
-  (`ASSET_VIEW_TABS`, `WatchPage.jsx:656`). These are **read-only client-side filters over the
+  (`ASSET_VIEW_TABS`, `WatchPage.jsx:1085`). These are **read-only client-side filters over the
   `initialLoad` snapshot** — `filterViewRows` switches on `idmsStatus` and `syncStatus`, and the tab
   refreshes with `pollOnce(runId, 'initialLoad')`. They are not stages, cannot be polled, and have no
   snapshot of their own. A device only appears in one if it is in this run's initial-load device pool.
@@ -369,7 +407,7 @@ The filters, since the mapping is not otherwise written down: `shippedActive` is
 `FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER` status; `deadView` is
 `NON_REPAIRABLE_BY_REPAIR_PARTNER`/`_SYNC_FAILED`, or `_SYNC_SUCCESS` with IDMS 9.
 
-Only `rmaInitiated` and `deadView` are selectable (`selectable`, `WatchPage.jsx:699`) — they feed the
+Only `rmaInitiated` and `deadView` are selectable (`selectable`, `WatchPage.jsx:1137`) — they feed the
 `rmaReturned` and `deviceDead` generates. The other three views are informational. `DEAD` is
 rendered last in the strip deliberately, after the `rmaReturned` stage tab, so the destructive
 operation is not adjacent to the ordinary ones.
@@ -384,11 +422,13 @@ particular format; `validator.js` checks against the descriptor's own declared c
 global rule. Adding a format is a JSON drop-in — see `templates/README.md` for the schema and the
 per-sheet quirks.
 
-**Both READMEs are stale on counts.** `templates/README.md` still says "The 13 templates" and
-"All 15 source sheets"; `README.md` claims "All 13 headers" and "All 13 byte contracts" match. The
-six descriptors added since (`octo-initial-load`, `octo-shipment-update`, `octo-data-update`,
+**`templates/README.md` is stale on counts.** It still says "The 13 templates", "All 15 source
+sheets" and "Six families, five operations, 13 formats". (`README.md` no longer makes byte-contract
+claims at all — commit `1680597` rewrote it as a user guide and moved the build history, the
+Outlook DOM findings and the "still needed from you" list to `docs/design-notes.md`.) The six
+descriptors added since (`octo-initial-load`, `octo-shipment-update`, `octo-data-update`,
 `device-dead`, `rma-returned`, plus the three shipment-update sheets from `33792d3`) are in neither
-table, and the byte-contract claim is no longer true — see "Test state".
+table, and its byte-contract claim is no longer true — see "Test state".
 
 The families are `driveri`, `dhub`, `dms`, `haptic`, `vbus`, `octo`, plus `shared` for the four
 family-agnostic sheets (`received-load`, `order-load`, `partner-order-load`, `device-dead`,
@@ -503,6 +543,44 @@ Three things the UI would otherwise have to ask for on every run:
   (`Partially Shipped`, which drives the warning on Review).
 - **`catalogFilters`** — which serialized-catalog rows the Families & SKUs picker shows per family.
   Applied server-side by `services/catalog-filter.js` via `GET /api/catalog/products?family=`.
+
+**`Not_for_Sales__c` and pricebooks scope the picker, and neither is a gate.** Added 2026-08-27. The
+catalog is narrowed **family → pricebook → sellability** by `scopeCatalog`
+(`services/catalog-filter.js`); each stage reports its own verdict because with three filters stacked
+the UI has to say which one emptied the table. Two rules matter more than the feature:
+
+- **`Not_for_Sales__c` is commercial, not fulfilment** — note the plural *Sales*. It is `true` on
+  `VDI2L001`, the SKU on the real accepted VBUS initial-load sheet, and on the DHUB V2 hub, the
+  VBUS data reader, and all ten refurbished `-R` D210 codes plus nine D215s. Hiding those by default
+  is a convenience; the `Show non-sellable` toggle is what keeps those loads reachable, and
+  **removing the toggle makes the VBUS initial load unpickable.** 128 of the org's active products
+  carry the flag, 604 do not.
+- **`notForSale` is tri-state.** `null` means the org did not report the field, and is **never**
+  hidden — an unknown must not manufacture a conclusion, the same rule `positionInChain` follows for
+  a status it cannot place. The field is **optional** in `CATALOG_FIELDS`, so an org lacking it simply
+  does not name it; had it been `required`, a staging deployment without it would fail the whole
+  catalog query, which is exactly the `L1_Product_Family__c` outage. `filterCatalogBySellability`
+  reports `applied` from observed effect rather than intent, so the UI can tell "nothing was flagged"
+  from "the flag could not be read" and never renders a false `0 hidden`.
+
+A pricebook is **not** a pure narrowing: Standard Price Book holds 210 active serialized entries
+against this catalog's ~170, including `AT700`, `TT603`, `KFOB`, `SPEAKER`, `DR-20`, `DR-40` and nine
+`EXCAM-*` series no family rule covers. Applying it *after* the family rule is what stops it widening
+the picker. Membership is a separate id-only `PricebookEntry` read cached per `env:pricebookId`
+(`GET /api/catalog/pricebooks` lists the 18 active books, standard first); a failed membership read
+falls back to the unscoped list rather than failing the request. Sellability costs **no** query —
+`notForSale` is a field on the row, so the toggle re-filters in memory.
+
+`pricebookId` is the only value in this app that reaches SOQL straight from a query string, so it is
+validated by `isSalesforceId` rather than escaped. A hostile id is dropped, which makes membership
+`null`, which reads as "no book selected" — so an injection attempt degrades into exactly the default
+view. The security guard and the stale-book guard are the same code path.
+
+**`Not_for_Sales__c` is confirmed on `Product2` in testing and still unverified in staging** — that
+session was expired on both 2026-08-27 attempts. Nothing is blocked on it; the tri-state handles
+either answer. See `docs/superpowers/specs/2026-08-27-pricebook-catalog-scope-design.md`.
+
+The book is a **view filter only** — it never reaches a run, a CSV, or a send.
 
 **Filter on `Product_Series__c` — the org's "L3 Product Series".** It is the only field that names
 a product line exactly (`DHUB`, `DMS`, `VBUS`, `D810`, `HAPTIC`, and the D-series). **Do not reach
@@ -658,7 +736,7 @@ Two orders come out of this, and they are not interchangeable:
 
 - `operationChain()` — the movement chain, `[initialLoad, shipmentUpdate, received]`.
 - `pollingOrder()` — the same with stage steps spliced in at their `before`,
-  `[initialLoad, dataUpdate, shipmentUpdate, received]`. **`positionInChain` (`sf-client.js:685`)
+  `[initialLoad, dataUpdate, shipmentUpdate, received]`. **`positionInChain` (`sf-client.js:856`)
   uses this one**: a device carrying `DATA_UPDATE_SYNC_SUCCESS` is somewhere real, and an order
   that omits the step reads it as `unknown`, which is then treated as not-done.
 
@@ -689,21 +767,29 @@ at all — `isOctoRun` in `runs.js`, true the moment any group is Octo, not only
 A run with no Octo group never carries accessories, and the completeness check is vacuously true
 there, which is correct: there is nothing on those devices to wait on.
 
-That accessory data is fetched after the stage split has already run, and has to be threaded through
-it by hand. `GET /:runId/poll/:stage` (`runs.js:1046`) calls `scopeSnapshot()` first, which runs
-`splitByStagePosition` and builds `snapshot.atStage` from the row objects as they stand at that
-instant. The Octo block that follows maps over `snapshot.rows` to attach `accessories`
-(`runs.js:1066-1101`), and a `.map()` builds new objects — `atStage.rows` was already set from the
-old ones and kept pointing at them. The Watch page reads
-`{ ...fullSnapshot, ...fullSnapshot.atStage }`, so `rows` is the un-enriched array: a run measured
-before the fix showed `atStage` at 4 rows, with accessories attached to 0 of them. Because
-`accessoriesComplete`'s `.every()` over an empty list is `true`, the completeness gate silently
-passed every device whenever any device on the run was ahead of or behind the watched stage — the
-ordinary case, not an edge one. The fix (`runs.js:1108-1117`) re-maps `atStage.rows` through the
-same enrichment once it exists. `movedOn` and `notYet` never needed this: `splitByStagePosition`
-already reduces them to `{deviceId, syncStatus, stage}`, nothing left on them to enrich. The lesson
-generalises past Octo: anything that enriches rows after `scopeSnapshot` has to be propagated onto
-`atStage.rows` by hand, or it stays invisible to the UI.
+**The fetch and the decoration live in one module, `server/services/accessory-enrichment.js`**, not
+inline in the two route handlers that need them. `accessorySerialsFor(accessoriesRecord)` and
+`attachAccessories(rows, accessoriesRecord, accessoryAssets)` are pure — no Salesforce, tested with
+plain objects — and `enrichWithAccessories(env, rows, accessoriesRecord)` is the thin async wrapper
+that calls `fetchAssetsByDeviceId` and then the pure decorator, swallowing its own failure so an
+accessory-fetch error never taints a caller's own read. `GET /:runId/lifecycle` and
+`GET /:runId/poll/:stage` both call it; each still decides for itself, via its own `isOctoRun`
+check, whether there's anything worth fetching — the module already no-ops on an empty or absent
+`accessoriesRecord`, so a caller that skipped that check would still be correct, just slower.
+
+This replaced two duplicated inline blocks and, in `poll/:stage`, a structural hazard that came with
+them: enrichment used to run *after* `scopeSnapshot()` had already split the snapshot, so
+`snapshot.atStage.rows` — what the Watch page actually reads, via
+`{ ...fullSnapshot, ...fullSnapshot.atStage }` — kept pointing at the pre-enrichment row objects. A
+run measured before the fix showed `atStage` at 4 rows with accessories attached to 0 of them, and
+because `accessoriesComplete`'s `.every()` over an empty list is `true`, the completeness gate
+silently passed every device whenever any device on the run was ahead of or behind the watched
+stage — the ordinary case, not an edge one. It was patched at the time by re-mapping `atStage.rows`
+through the same enrichment by hand. `GET /:runId/poll/:stage` now calls `enrichWithAccessories` on
+the raw snapshot *before* `scopeSnapshot()` runs, which removes the hazard rather than continuing to
+patch it: `rescoreSnapshot`/`splitByStagePosition` (`sf-client.js`) spread and filter row objects
+rather than rebuilding them, so a row's `.accessories` field, once present, survives the split into
+`atStage`/`movedOn`/`notYet` for free. The re-map step is gone; there is nothing left to forget.
 
 Two things this deliberately does not do:
 
@@ -723,7 +809,7 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
 
 | File | Role |
 |---|---|
-| `server/routes/runs.js` | ~1440 lines, the whole pipeline; most behaviour changes land here |
+| `server/routes/runs.js` | ~1420 lines, the whole pipeline; most behaviour changes land here |
 | `server/routes/auth.js` | SF login/MFA/manual-sid, Outlook sign-in, forget-browser |
 | `server/routes/catalog.js` | families, templates, picklists, profiles, lifecycle, order lookup |
 | `server/lib/bytes.js` | BOM/CRLF primitives, `assertCsvBytes`, hex dump, Excel serial repair |
@@ -733,6 +819,7 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
 | `services/sf-session.js` | Playwright login, sid capture, silent refresh from browser profile |
 | `services/session-audit.js` | boot-time liveness check of every stored Salesforce + Outlook session |
 | `services/sf-client.js` | every SOQL read; `classifySyncStatus`; `summarisePolling` |
+| `services/accessory-enrichment.js` | Octo accessory fetch + decoration, shared by `poll/:stage` and `lifecycle` |
 | `services/id-generator.js` | series allocation against persisted counters, `setCursor`/`resetCursor` |
 | `services/sku-decoder.js` | positional SKU decoding — no quantity ever comes out of this |
 | `services/csv-builder.js` | descriptor-driven generation, four row planners |
@@ -953,10 +1040,30 @@ Outlook's own banner text to `data/diagnostics/`.
 
 ## Further reading, in priority order
 
-1. `README.md` — the operational story, including what is still missing (three mailboxes, four CSV
-   formats) and the hard-won Outlook DOM details.
-2. `templates/README.md` — descriptor schema, the 13 formats, source-sheet defects reproduced or
+1. `README.md` — the operator's user guide: the vocabulary, one run start to finish, chaining,
+   what to do when a third of the batch fails.
+2. `docs/design-notes.md` — build history and the reasoning behind the mail path: why not SMTP, how
+   attaching was diagnosed, how the login works, and what is still missing (three mailboxes, four
+   CSV formats).
+3. `templates/README.md` — descriptor schema, the 13 formats, source-sheet defects reproduced or
    deliberately not.
-3. `device-load-and-shipment-process.md` — the original process spec. **Where it disagrees with the
+4. `device-load-and-shipment-process.md` — the original process spec. **Where it disagrees with the
    real sheets, the sheets win** — they are what the Apex parser has actually accepted. Both
    READMEs table the disagreements.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are local markdown under `.scratch/<feature>/`; there is no external issue queue —
+work originates with the maintainer. `.scratch/` is gitignored. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name, carried on a `Status:` line in the
+issue file. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root, neither written yet.
+See `docs/agents/domain.md`.

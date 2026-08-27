@@ -191,7 +191,24 @@ its SELECT list, naming it failed the *entire* catalog query and the picker show
 family. Routing `Not_for_Sales__c` through `has()` means the worst case in staging is that the flag
 cannot be read and nothing is hidden — reported, not silent.
 
-**Action before release:** re-run the describe against staging and record the result here.
+**Re-checked 2026-08-27 — still unverified, and blocked rather than unknown.** The staging session
+on this machine expired on 2026-08-25 (`data/sessions/staging.json` holds a null `sid` and
+`expiredReason: "401 and silent refresh failed"`), so `fieldsOn('staging', 'Product2')` returns
+`null` — "describe unreadable", not "field absent". Testing reports the field among 185 fields.
+
+**Action still open:** connect staging on the Connect screen, then run
+
+```bash
+node --input-type=module -e '
+import { fieldsOn } from "./server/services/sf-client.js";
+const f = await fieldsOn("staging", "Product2");
+console.log(f === null ? "DESCRIBE UNREADABLE" : f.includes("Not_for_Sales__c") ? "PRESENT" : "ABSENT");'
+```
+
+and record the answer here. **Nothing is blocked on it**: the tri-state design already handles all
+three outcomes. If the field is `ABSENT`, every staging row reads `notForSale: null`, the sellability
+filter hides nothing, and the picker says *"This org does not report `Not_for_Sales__c`, so nothing
+is hidden on it."* The answer changes the documentation, not the code.
 
 ## UI design
 
