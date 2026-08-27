@@ -1,6 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { filterCatalogByFamily, declaredSeries } from './catalog-filter.js';
+import {
+  filterCatalogByFamily,
+  declaredSeries,
+  filterCatalogByPricebook,
+  filterCatalogBySellability,
+  scopeCatalog,
+} from './catalog-filter.js';
 
 /**
  * The picker's family filter, against catalog rows shaped like `fetchSerializedCatalog` returns.
@@ -359,5 +365,155 @@ describe('series a family rule declares', () => {
   test('no rules at all is not an error', () => {
     assert.deepEqual(declaredSeries(undefined), []);
     assert.deepEqual(declaredSeries({}), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pricebook membership and sellability
+// ---------------------------------------------------------------------------
+
+/**
+ * Rows shaped as `fetchSerializedCatalog` returns them, with the two fields these filters read.
+ * `notForSale` values are the real ones from the testing org on 2026-08-27: VDI2L001 is flagged
+ * `true` even though it is the SKU on the accepted VBUS initial-load sheet.
+ */
+const SCOPED = [
+  { id: '01t01', productCode: 'DHUBX', productSeries: 'DHUB', family: 'Accessory', notForSale: false },
+  { id: '01t02', productCode: 'VDI2L001', productSeries: 'VBUS', family: 'Accessory', notForSale: true },
+  { id: '01t03', productCode: 'VDI3N001', productSeries: 'VBUS', family: 'Accessory', notForSale: false },
+  { id: '01t04', productCode: 'ACCDR2DHUBXV2', productSeries: 'DHUB', family: 'Accessory', notForSale: true },
+];
+
+const scopedCodes = (r) => r.products.map((p) => p.productCode);
+
+describe('narrowing the catalog to one pricebook', () => {
+  test('only products in the book survive', () => {
+    const r = filterCatalogByPricebook(SCOPED, new Set(['01t01', '01t03']));
+    assert.deepEqual(scopedCodes(r), ['DHUBX', 'VDI3N001']);
+    assert.equal(r.applied, true);
+    assert.equal(r.reason, null);
+  });
+
+  test('no book selected leaves the catalog alone', () => {
+    const r = filterCatalogByPricebook(SCOPED, null);
+    assert.equal(r.products.length, 4);
+    assert.equal(r.applied, false);
+    assert.equal(r.reason, 'no-pricebook-selected');
+  });
+
+  test('an empty membership set falls back to everything rather than an empty table', () => {
+    // A book with no matching entries and a failed membership query are indistinguishable here.
+    // Showing too much costs a search; showing nothing stops the run.
+    const r = filterCatalogByPricebook(SCOPED, new Set());
+    assert.equal(r.products.length, 4);
+    assert.equal(r.applied, false);
+    assert.equal(r.reason, 'no-entries-in-pricebook');
+  });
+
+  test('a book that matches nothing in this catalog falls back too', () => {
+    const r = filterCatalogByPricebook(SCOPED, new Set(['01tZZ']));
+    assert.equal(r.products.length, 4);
+    assert.equal(r.applied, false);
+    assert.equal(r.reason, 'no-matches');
+  });
+
+  test('total reports the population before narrowing', () => {
+    const r = filterCatalogByPricebook(SCOPED, new Set(['01t01']));
+    assert.equal(r.total, 4);
+    assert.equal(r.products.length, 1);
+  });
+});
+
+describe('hiding products the org flags as not for sale', () => {
+  test('flagged products are dropped and counted', () => {
+    const r = filterCatalogBySellability(SCOPED, { includeNonSellable: false });
+    assert.deepEqual(scopedCodes(r), ['DHUBX', 'VDI3N001']);
+    assert.equal(r.hidden, 2);
+    assert.equal(r.applied, true);
+    assert.equal(r.unknown, false);
+  });
+
+  test('the toggle keeps everything and reports that nothing was applied', () => {
+    const r = filterCatalogBySellability(SCOPED, { includeNonSellable: true });
+    assert.equal(r.products.length, 4);
+    assert.equal(r.hidden, 0);
+    assert.equal(r.applied, false);
+  });
+
+  test('an unknown flag is never hidden, and is reported as unknown', () => {
+    // This is the staging guard. If Not_for_Sales__c is missing from that org's describe, every
+    // row reads null — and hiding them all would empty the picker for a field we could not read.
+    const unknown = SCOPED.map((p) => ({ ...p, notForSale: null }));
+    const r = filterCatalogBySellability(unknown, { includeNonSellable: false });
+    assert.equal(r.products.length, 4, 'nothing is hidden on an unreadable flag');
+    assert.equal(r.hidden, 0);
+    assert.equal(r.unknown, true);
+    assert.equal(r.applied, false, 'a filter that hid nothing did not apply');
+  });
+
+  test('a mix of known and unknown hides only the known true', () => {
+    const mixed = [
+      { id: 'a', productCode: 'A', notForSale: true },
+      { id: 'b', productCode: 'B', notForSale: null },
+      { id: 'c', productCode: 'C', notForSale: false },
+    ];
+    const r = filterCatalogBySellability(mixed, { includeNonSellable: false });
+    assert.deepEqual(scopedCodes(r), ['B', 'C']);
+    assert.equal(r.hidden, 1);
+    assert.equal(r.unknown, true);
+  });
+});
+
+describe('composing the three narrowings', () => {
+  const FILTERS_SCOPED = { vbus: { series: ['VBUS'] }, dhub: { series: ['DHUB'] } };
+
+  test('family narrows first, then the book, then sellability', () => {
+    const r = scopeCatalog(SCOPED, {
+      family: 'vbus',
+      filters: FILTERS_SCOPED,
+      memberIds: new Set(['01t02', '01t03']),
+      includeNonSellable: false,
+    });
+    assert.deepEqual(scopedCodes(r), ['VDI3N001'], 'VBUS, in the book, and sellable');
+    assert.equal(r.catalogTotal, 4, 'the population before any narrowing');
+    assert.equal(r.total, 1);
+    assert.equal(r.filterApplied, true);
+    assert.equal(r.pricebook.applied, true);
+    assert.equal(r.sellability.hidden, 1, 'VDI2L001, hidden within this family and book');
+  });
+
+  test('each stage keeps its own reason rather than one flag for all three', () => {
+    const r = scopeCatalog(SCOPED, {
+      family: 'octo',
+      filters: FILTERS_SCOPED,
+      memberIds: null,
+      includeNonSellable: false,
+    });
+    assert.equal(r.filterApplied, false);
+    assert.equal(r.filterReason, 'no-filter-declared', 'no rule for octo in this fixture');
+    assert.equal(r.pricebook.reason, 'no-pricebook-selected');
+    assert.equal(r.sellability.applied, true, 'sellability still ran over the unscoped catalog');
+  });
+
+  test('sellability counts are relative to the family and book, not the whole org', () => {
+    const r = scopeCatalog(SCOPED, {
+      family: 'dhub',
+      filters: FILTERS_SCOPED,
+      memberIds: null,
+      includeNonSellable: false,
+    });
+    assert.deepEqual(scopedCodes(r), ['DHUBX']);
+    assert.equal(r.sellability.hidden, 1, 'only ACCDR2DHUBXV2 — VDI2L001 is not in this family');
+  });
+
+  test('an empty catalog composes without throwing', () => {
+    const r = scopeCatalog([], {
+      family: 'vbus',
+      filters: FILTERS_SCOPED,
+      memberIds: null,
+      includeNonSellable: false,
+    });
+    assert.deepEqual(r.products, []);
+    assert.equal(r.catalogTotal, 0);
   });
 });
