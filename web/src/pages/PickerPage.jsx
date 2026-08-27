@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Explainer, KeyValue, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, Field, KeyValue, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * Family and SKU picker.
@@ -29,8 +29,34 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
   // A read in flight is not a failed read. Without this the "unavailable" callout renders for as
   // long as the first query takes, which on a cold catalog is a second of shouting about nothing.
   const [catalogLoading, setCatalogLoading] = React.useState(false);
+  // The org's active pricebooks, and the one selected. `null` means "All price books" — today's
+  // behaviour, and the default deliberately: Standard Price Book's serialized population differs
+  // from this catalog's, so defaulting to it would silently change what is on offer.
+  const [pricebooks, setPricebooks] = React.useState([]);
+  const [pricebookId, setPricebookId] = React.useState(null);
+  // Non-sellable SKUs are hidden by default. VDI2L001 — the SKU on the accepted VBUS sheet — is
+  // flagged non-sellable, so this toggle is what keeps that load reachable.
+  const [includeNonSellable, setIncludeNonSellable] = React.useState(false);
 
   const operation = setup.operation ?? 'initialLoad';
+
+  React.useEffect(() => {
+    let cancelled = false;
+    api
+      .pricebooks(env)
+      .then((r) => {
+        if (!cancelled) setPricebooks(r.pricebooks ?? []);
+      })
+      .catch(() => {
+        // Deliberately quiet. The pricebook filter is an aid; losing it must not raise a banner
+        // over a picker that still works, and the catalog's own error path already reports a
+        // dead session.
+        if (!cancelled) setPricebooks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [env]);
 
   React.useEffect(() => {
     Promise.all([api.families(env), api.templates()])
@@ -68,7 +94,16 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
     let cancelled = false;
     setCatalogLoading(true);
     api
-      .products(env, showAll ? {} : { family: activeFamily })
+      .products(
+        env,
+        showAll
+          ? { includeNonSellable: String(includeNonSellable) }
+          : {
+              family: activeFamily,
+              ...(pricebookId ? { pricebookId } : {}),
+              includeNonSellable: String(includeNonSellable),
+            }
+      )
       .then((products) => {
         if (cancelled) return;
         setCatalog(products);
@@ -85,7 +120,7 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
     return () => {
       cancelled = true;
     };
-  }, [env, activeFamily, showAll, catalogReload]);
+  }, [env, activeFamily, showAll, catalogReload, pricebookId, includeNonSellable]);
 
   const supported = React.useMemo(
     () =>
@@ -214,6 +249,27 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
           Only some families support every operation — Haptic has a data update, VBUS and DMS have
           initial load only. Go back and pick a different operation.
         </Callout>
+      ) : null}
+
+      {pricebooks.length > 0 ? (
+        <Sheet eyebrow="Catalog" title="Price book">
+          <Field
+            label="Price book"
+            hint="Narrows the SKUs on offer to the products in one book. Leave on all books to search the whole catalog."
+          >
+            <select
+              value={pricebookId ?? ''}
+              onChange={(e) => setPricebookId(e.target.value || null)}
+            >
+              <option value="">All price books</option>
+              {pricebooks.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </Sheet>
       ) : null}
 
       <Sheet title="Family">

@@ -67,6 +67,7 @@ export const api = {
   families: (env) => get(`/api/catalog/families?${q({ env })}`),
   templates: () => get('/api/catalog/templates'),
   products: (env, params = {}) => get(`/api/catalog/products?${q({ env, ...params })}`),
+  pricebooks: (env) => get(`/api/catalog/pricebooks?${q({ env })}`),
   picklists: (env) => get(`/api/catalog/picklists?${q({ env })}`),
   recentOrders: (env) => get(`/api/catalog/orders/recent?${q({ env })}`),
   order: (env, orderNumber) =>
