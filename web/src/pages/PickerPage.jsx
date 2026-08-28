@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Explainer, KeyValue, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
+import { Badge, Callout, Explainer, Field, KeyValue, PageHead, Segmented, Sheet, Stat } from '../components/ui.jsx';
 
 /**
  * Family and SKU picker.
@@ -29,8 +29,34 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
   // A read in flight is not a failed read. Without this the "unavailable" callout renders for as
   // long as the first query takes, which on a cold catalog is a second of shouting about nothing.
   const [catalogLoading, setCatalogLoading] = React.useState(false);
+  // The org's active pricebooks, and the one selected. `null` means "All price books" — today's
+  // behaviour, and the default deliberately: Standard Price Book's serialized population differs
+  // from this catalog's, so defaulting to it would silently change what is on offer.
+  const [pricebooks, setPricebooks] = React.useState([]);
+  const [pricebookId, setPricebookId] = React.useState(null);
+  // Non-sellable SKUs are hidden by default. VDI2L001 — the SKU on the accepted VBUS sheet — is
+  // flagged non-sellable, so this toggle is what keeps that load reachable.
+  const [includeNonSellable, setIncludeNonSellable] = React.useState(false);
 
   const operation = setup.operation ?? 'initialLoad';
+
+  React.useEffect(() => {
+    let cancelled = false;
+    api
+      .pricebooks(env)
+      .then((r) => {
+        if (!cancelled) setPricebooks(r.pricebooks ?? []);
+      })
+      .catch(() => {
+        // Deliberately quiet. The pricebook filter is an aid; losing it must not raise a banner
+        // over a picker that still works, and the catalog's own error path already reports a
+        // dead session.
+        if (!cancelled) setPricebooks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [env]);
 
   React.useEffect(() => {
     Promise.all([api.families(env), api.templates()])
@@ -68,7 +94,16 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
     let cancelled = false;
     setCatalogLoading(true);
     api
-      .products(env, showAll ? {} : { family: activeFamily })
+      .products(
+        env,
+        showAll
+          ? { includeNonSellable: String(includeNonSellable) }
+          : {
+              family: activeFamily,
+              ...(pricebookId ? { pricebookId } : {}),
+              includeNonSellable: String(includeNonSellable),
+            }
+      )
       .then((products) => {
         if (cancelled) return;
         setCatalog(products);
@@ -85,7 +120,7 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
     return () => {
       cancelled = true;
     };
-  }, [env, activeFamily, showAll, catalogReload]);
+  }, [env, activeFamily, showAll, catalogReload, pricebookId, includeNonSellable]);
 
   const supported = React.useMemo(
     () =>
@@ -214,6 +249,27 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
           Only some families support every operation — Haptic has a data update, VBUS and DMS have
           initial load only. Go back and pick a different operation.
         </Callout>
+      ) : null}
+
+      {pricebooks.length > 0 ? (
+        <Sheet eyebrow="Catalog" title="Price book">
+          <Field
+            label="Price book"
+            hint="Narrows the SKUs on offer to the products in one book. Leave on all books to search the whole catalog."
+          >
+            <select
+              value={pricebookId ?? ''}
+              onChange={(e) => setPricebookId(e.target.value || null)}
+            >
+              <option value="">All price books</option>
+              {pricebooks.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </Sheet>
       ) : null}
 
       <Sheet title="Family">
@@ -353,6 +409,8 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
                 familyLabel={activeTemplate.familyLabel ?? activeFamily}
                 showAll={showAll}
                 onToggle={() => setShowAll((v) => !v)}
+                includeNonSellable={includeNonSellable}
+                onToggleSellable={() => setIncludeNonSellable((v) => !v)}
               />
             <div className="picker-results">
               {results.length === 0 ? (
@@ -523,41 +581,94 @@ export default function PickerPage({ env, setup, setRunId, goto, onError }) {
  *   - `no-matches` — a rule exists and matched nothing, which means it has gone stale against the
  *     org rather than that the family is empty.
  */
-function CatalogScope({ catalog, familyLabel, showAll, onToggle }) {
-  const { total, catalogTotal, filterApplied, filterReason } = catalog;
+function CatalogScope({
+  catalog,
+  familyLabel,
+  showAll,
+  onToggle,
+  includeNonSellable,
+  onToggleSellable,
+}) {
+  const { total, catalogTotal, filterApplied, filterReason, pricebook, sellability } = catalog;
   const narrowed = filterApplied && !showAll;
 
   return (
-    <div className="btn-row" style={{ marginBottom: '0.7rem', alignItems: 'baseline' }}>
-      <span className="muted small">
-        {narrowed ? (
-          <>
-            Showing the <strong>{familyLabel}</strong> devices — {total} of {catalogTotal} products.
-          </>
-        ) : showAll ? (
-          <>Showing all {total} serialized products.</>
-        ) : filterReason === 'no-filter-declared' ? (
-          <>
-            No catalog rule for <strong>{familyLabel}</strong>, so all {total} products are listed.
-            Add one under <code>catalogFilters</code> in <code>config/profiles.json</code>.
-          </>
-        ) : filterReason === 'no-matches' ? (
-          // Deliberately not "the rule is stale". It might be — or the org may simply hold no such
-          // product, which is Haptic's case: HAPTIC is a real active series with nothing in it.
-          // Both look identical from here, so claim only what is certain.
-          <>
-            No serialized product in this org belongs to <strong>{familyLabel}</strong>. Showing all{' '}
-            {total} products rather than an empty table.
-          </>
-        ) : (
-          <>Showing all {total} serialized products.</>
-        )}
-      </span>
-      {filterApplied || showAll ? (
-        <button className="btn quiet small" onClick={onToggle}>
-          {showAll ? `Back to ${familyLabel} only` : `Show all ${catalogTotal}`}
-        </button>
+    <>
+      <div className="btn-row" style={{ marginBottom: '0.7rem', alignItems: 'baseline' }}>
+        <span className="muted small">
+          {narrowed ? (
+            <>
+              Showing the <strong>{familyLabel}</strong> devices — {total} of {catalogTotal}{' '}
+              products.
+            </>
+          ) : showAll ? (
+            <>Showing all {total} serialized products.</>
+          ) : filterReason === 'no-filter-declared' ? (
+            <>
+              No catalog rule for <strong>{familyLabel}</strong>, so all {total} products are listed.
+              Add one under <code>catalogFilters</code> in <code>config/profiles.json</code>.
+            </>
+          ) : filterReason === 'no-matches' ? (
+            // Deliberately not "the rule is stale". It might be — or the org may simply hold no such
+            // product, which is Haptic's case: HAPTIC is a real active series with nothing in it.
+            // Both look identical from here, so claim only what is certain.
+            <>
+              No serialized product in this org belongs to <strong>{familyLabel}</strong>. Showing
+              all {total} products rather than an empty table.
+            </>
+          ) : (
+            <>Showing all {total} serialized products.</>
+          )}
+        </span>
+        {filterApplied || showAll ? (
+          <button className="btn quiet small" onClick={onToggle}>
+            {showAll ? `Back to ${familyLabel} only` : `Show all ${catalogTotal}`}
+          </button>
+        ) : null}
+      </div>
+
+      {/* The pricebook's own verdict. A book that narrowed nothing says so rather than staying
+          silent, because a filter the operator set and cannot see the effect of reads as broken. */}
+      {pricebook?.id ? (
+        <div className="muted small" style={{ marginBottom: '0.7rem' }}>
+          {pricebook.applied ? (
+            <>
+              In <strong>{pricebook.name}</strong>.
+            </>
+          ) : pricebook.reason === 'no-matches' ? (
+            <>
+              No product here is in <strong>{pricebook.name}</strong>. Showing the unscoped list
+              rather than an empty table.
+            </>
+          ) : pricebook.reason === 'no-entries-in-pricebook' ? (
+            <>
+              <strong>{pricebook.name}</strong> has no active entries, or could not be read. Showing
+              the unscoped list.
+            </>
+          ) : null}
+        </div>
       ) : null}
-    </div>
+
+      {/* Sellability. `unknown` is not "0 hidden": the flag could not be read at all, and saying
+          "0 hidden" would claim every product is sellable on evidence we do not have. */}
+      <div className="btn-row" style={{ marginBottom: '0.7rem', alignItems: 'baseline' }}>
+        <span className="muted small">
+          {sellability?.unknown && !sellability?.applied ? (
+            <>
+              This org does not report <code>Not_for_Sales__c</code>, so nothing is hidden on it.
+            </>
+          ) : includeNonSellable ? (
+            <>Including products flagged Not for Sale.</>
+          ) : sellability?.hidden > 0 ? (
+            <>{sellability.hidden} hidden as Not for Sale.</>
+          ) : null}
+        </span>
+        {sellability?.hidden > 0 || includeNonSellable ? (
+          <button className="btn quiet small" onClick={onToggleSellable}>
+            {includeNonSellable ? 'Hide Not for Sale' : 'Show non-sellable'}
+          </button>
+        ) : null}
+      </div>
+    </>
   );
 }

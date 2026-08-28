@@ -132,3 +132,118 @@ function includesLoosely(list, value) {
   const wanted = String(value).toLowerCase();
   return list.some((entry) => String(entry).toLowerCase() === wanted);
 }
+
+/**
+ * Narrow the catalog to the products in one pricebook.
+ *
+ * A pricebook is not a pure narrowing of this catalog: Standard Price Book holds 210 active
+ * serialized entries against the picker's ~170, including series no family rule covers (AT700,
+ * KFOB, SPEAKER, nine EXCAM variants). Applying it *after* the family rule is what keeps that
+ * from widening the picker — the family rule remains the primary filter.
+ *
+ * `memberIds` of `null` means no book is selected. An empty set, or one intersecting nothing, falls
+ * back to the whole catalog for the same reason `filterCatalogByFamily` does: a stale book and a
+ * genuinely empty one are indistinguishable from here, and an empty table stops the operator where
+ * too many rows only cost a search.
+ *
+ * @param {Array<object>} products
+ * @param {Set<string>|null} memberIds  Product2 ids in the selected book
+ * @returns {{products: Array<object>, total: number, applied: boolean, reason: string|null}}
+ */
+export function filterCatalogByPricebook(products, memberIds) {
+  const all = Array.isArray(products) ? products : [];
+  const unfiltered = (reason) => ({ products: all, total: all.length, applied: false, reason });
+
+  if (!memberIds) return unfiltered('no-pricebook-selected');
+  if (!memberIds.size) return unfiltered('no-entries-in-pricebook');
+
+  const matched = all.filter((p) => memberIds.has(p.id));
+  if (!matched.length) return unfiltered('no-matches');
+
+  return { products: matched, total: all.length, applied: true, reason: null };
+}
+
+/**
+ * Drop products the org flags as not for sale.
+ *
+ * `Not_for_Sales__c` is a *commercial* flag — do not quote or sell this item. It is not a
+ * fulfilment flag, and this app does not sell anything: `VDI2L001`, the SKU on the real accepted
+ * VBUS initial-load sheet, carries `true`, as do the DHUB V2 hub and all ten refurbished `-R` D210
+ * codes. So this filter is an aid, never a gate — the picker offers a toggle to show them.
+ *
+ * A `notForSale` of `null` means the org did not report the field, and is never hidden. Hiding an
+ * unknown would empty the picker in an org missing the field, which is exactly how the
+ * `L1_Product_Family__c` outage presented.
+ *
+ * @param {Array<object>} products
+ * @param {{includeNonSellable?: boolean}} opts
+ * @returns {{products, total, applied, reason, hidden: number, unknown: boolean}}
+ */
+export function filterCatalogBySellability(products, { includeNonSellable = false } = {}) {
+  const all = Array.isArray(products) ? products : [];
+  const unknown = all.some((p) => p.notForSale === null || p.notForSale === undefined);
+
+  if (includeNonSellable) {
+    return {
+      products: all,
+      total: all.length,
+      applied: false,
+      reason: 'showing-non-sellable',
+      hidden: 0,
+      unknown,
+    };
+  }
+
+  const kept = all.filter((p) => p.notForSale !== true);
+  const hidden = all.length - kept.length;
+
+  return {
+    products: kept,
+    total: all.length,
+    // A filter that hid nothing did not apply. This keeps the UI from announcing "0 hidden",
+    // which would falsely claim the flag was read and every product is sellable.
+    applied: hidden > 0,
+    reason: hidden > 0 ? null : unknown ? 'flag-unreadable' : 'nothing-flagged',
+    hidden,
+    unknown,
+  };
+}
+
+/**
+ * The picker's whole narrowing, in one place and in one order: family, then pricebook, then
+ * sellability.
+ *
+ * The order is the design. Family rules stay the primary filter, so the pricebook restricts within
+ * a family rather than replacing it — and each stage's counts are therefore relative to what the
+ * stage before it passed through. `sellability.hidden` is "hidden within this family and book",
+ * which is what makes the UI note true of the table on screen.
+ *
+ * `catalogTotal` keeps its established meaning: the population before *any* narrowing, so the
+ * picker's "Show all N" still means "drop every filter".
+ */
+export function scopeCatalog(
+  products,
+  { family = null, filters = {}, memberIds = null, includeNonSellable = false } = {}
+) {
+  const all = Array.isArray(products) ? products : [];
+
+  const byFamily = filterCatalogByFamily(all, family, filters);
+  const byBook = filterCatalogByPricebook(byFamily.products, memberIds);
+  const bySale = filterCatalogBySellability(byBook.products, { includeNonSellable });
+
+  return {
+    products: bySale.products,
+    total: bySale.products.length,
+    catalogTotal: all.length,
+    // Named as the route and CatalogScope already read them, so the family path is unchanged.
+    filterApplied: byFamily.filterApplied,
+    filterReason: byFamily.reason,
+    pricebook: { applied: byBook.applied, reason: byBook.reason },
+    sellability: {
+      applied: bySale.applied,
+      reason: bySale.reason,
+      hidden: bySale.hidden,
+      unknown: bySale.unknown,
+    },
+  };
+}

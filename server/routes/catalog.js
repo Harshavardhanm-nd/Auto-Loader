@@ -5,6 +5,9 @@ import {
   fetchAssetPicklists,
   fetchOrder,
   fetchRecentOrders,
+  fetchPricebooks,
+  fetchPricebookProductIds,
+  isSalesforceId,
 } from '../services/sf-client.js';
 import {
   loadProfiles,
@@ -16,7 +19,7 @@ import {
   sendBlockers,
 } from '../lib/config.js';
 import { decodeSku } from '../services/sku-decoder.js';
-import { filterCatalogByFamily, declaredSeries } from '../services/catalog-filter.js';
+import { declaredSeries, scopeCatalog } from '../services/catalog-filter.js';
 import { describeLifecycle } from '../lib/lifecycle.js';
 
 export const catalogRouter = express.Router();
@@ -36,30 +39,99 @@ async function getCatalog(env, { refresh = false } = {}) {
   return products;
 }
 
+/**
+ * Pricebooks change far less often than products, and membership is an id-only read, so both share
+ * the catalog's 10-minute TTL. Membership is keyed per book, so switching books costs one small
+ * query once — and toggling sellability costs none at all, because `notForSale` is a field on the
+ * row rather than a query parameter.
+ */
+const pricebookListCache = new Map(); // env -> { at, pricebooks }
+const pricebookMemberCache = new Map(); // `${env}:${pricebookId}` -> { at, ids }
+
+async function getPricebooks(env) {
+  const cached = pricebookListCache.get(env);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.pricebooks;
+  const pricebooks = await fetchPricebooks(env);
+  pricebookListCache.set(env, { at: Date.now(), pricebooks });
+  return pricebooks;
+}
+
+/**
+ * The Product2 ids in one book, or `null` when there is no usable book to scope by.
+ *
+ * A failed membership read returns `null` rather than throwing: the catalog itself was read fine,
+ * and `filterCatalogByPricebook` treats `null` as "no book selected" and falls back to the
+ * unscoped list. Losing the narrowing costs a search; failing the whole request would take the
+ * picker away over a filter the operator can live without.
+ */
+async function getPricebookMembers(env, pricebookId) {
+  if (!pricebookId || !isSalesforceId(pricebookId)) return null;
+  const key = `${env}:${pricebookId}`;
+  const cached = pricebookMemberCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.ids;
+  try {
+    const ids = await fetchPricebookProductIds(env, pricebookId);
+    pricebookMemberCache.set(key, { at: Date.now(), ids });
+    return ids;
+  } catch {
+    return null;
+  }
+}
+
+catalogRouter.get('/pricebooks', async (req, res, next) => {
+  try {
+    const env = req.query.env || 'testing';
+    res.json({ pricebooks: await getPricebooks(env) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 catalogRouter.get('/products', async (req, res, next) => {
   try {
     const env = req.query.env || 'testing';
     const all = await getCatalog(env, { refresh: req.query.refresh === 'true' });
 
-    // Narrow to the picker's selected family before anything else, so `q` and `kind` search
-    // inside that family rather than across the whole org. `filterApplied` is false whenever the
-    // narrowing could not be trusted — no rule for the family, or a rule that matched nothing —
-    // and the rows fall back to everything, which the UI reports rather than hides.
+    // Family, then pricebook, then sellability — one order, defined in scopeCatalog. Each stage
+    // reports its own verdict, because with three filters stacked the UI has to be able to say
+    // which one emptied the table. `q` and `kind` then search inside the final scope.
     const family = req.query.family || null;
-    const scoped = filterCatalogByFamily(all, family, loadProfiles().catalogFilters ?? {});
+    const pricebookId = req.query.pricebookId || null;
+    const includeNonSellable = req.query.includeNonSellable === 'true';
+    const memberIds = await getPricebookMembers(env, pricebookId);
+
+    const scoped = scopeCatalog(all, {
+      family,
+      filters: loadProfiles().catalogFilters ?? {},
+      memberIds,
+      includeNonSellable,
+    });
     const products = scoped.products;
+
+    const book = pricebookId
+      ? (await getPricebooks(env)).find((p) => p.id === pricebookId) ?? null
+      : null;
 
     const filtered = req.query.q
       ? searchCatalog(products, req.query.q, { kind: req.query.kind || null })
       : products.filter((p) => (req.query.kind ? p.kind === req.query.kind : true));
 
     res.json({
-      total: products.length,
-      // The size of the catalog before the family narrowing, so the UI can offer "show all N".
-      catalogTotal: scoped.total,
+      total: scoped.total,
+      // The size of the catalog before *any* narrowing, so "show all N" still means "drop every
+      // filter" rather than "drop only the family rule".
+      catalogTotal: scoped.catalogTotal,
       family,
       filterApplied: scoped.filterApplied,
-      filterReason: scoped.reason,
+      filterReason: scoped.filterReason,
+      pricebook: {
+        id: pricebookId,
+        // The org's own name, verbatim — a literal value, never re-cased.
+        name: book?.name ?? null,
+        applied: scoped.pricebook.applied,
+        reason: scoped.pricebook.reason,
+      },
+      sellability: scoped.sellability,
       counts: {
         device: products.filter((p) => p.kind === 'device').length,
         accessory: products.filter((p) => p.kind === 'accessory').length,
