@@ -9,3 +9,6 @@ data/
 # Saved Outlook session (Playwright storage state). Written on first sign-in.
 outlook-auth.json
 .playwright-mcp/
+
+# Skill scratch space: feature specs and tickets (docs/agents/issue-tracker.md).
+.scratch/

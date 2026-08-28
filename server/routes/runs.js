@@ -21,6 +21,7 @@ import {
   rescoreSnapshot,
   splitByStagePosition,
 } from '../services/sf-client.js';
+import { enrichWithAccessories } from '../services/accessory-enrichment.js';
 import { readSession } from '../services/sf-session.js';
 import { deliver, buildEml, describeSmtp } from '../services/mailer.js';
 import { checkSentItems, closeOutlook } from '../services/outlook-web-service.js';
@@ -1099,93 +1100,26 @@ runsRouter.post('/:runId/poll/:stage/once', async (req, res, next) => {
 runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
-    let snapshot = scopeSnapshot(run, req.params.stage, run.polling?.[req.params.stage] ?? null);
+    const rawSnapshot = run.polling?.[req.params.stage] ?? null;
 
-    // For Octo runs, fetch and add accessory status to snapshot rows.
+    // Enrich before scoping, not after: `scopeSnapshot` (via `rescoreSnapshot`/
+    // `splitByStagePosition`) spreads and filters row objects rather than rebuilding them, so an
+    // `.accessories` field already present on a row survives the split into `atStage`/`movedOn`/
+    // `notYet` for free. Enriching afterward — the previous order — left `atStage.rows` holding
+    // pre-enrichment row objects, since the Watch page reads `atStage.rows` in place of `rows`.
+    //
     // `.some`, not `.every`: `.every` read a mixed run (Octo plus another family) as non-Octo and
-    // silently skipped this whole block, so no row ever got `.accessories` and the Task 6 holdback
-    // was defeated for every device in that run, Octo included. The enrichment below already
-    // narrows to devices with a recorded accessory (`if (!run.accessories[row.deviceId]) return
-    // row;`), so `.some` here is safe — a mixed run's non-Octo devices pass through untouched.
+    // silently skipped enrichment for every device in that run, Octo included.
+    // `enrichWithAccessories` already narrows to devices with a recorded accessory, so `.some`
+    // here is safe — a mixed run's non-Octo devices pass through untouched.
     const isOctoRun = run.groups.some((g) => g.family === 'octo');
-    if (isOctoRun && run.accessories && snapshot?.rows?.length) {
-      try {
-        const accessorySerials = [];
-        for (const acc of Object.values(run.accessories)) {
-          if (acc.wiredSpeaker) accessorySerials.push(acc.wiredSpeaker);
-          if (acc.nativeCam) accessorySerials.push(acc.nativeCam);
-        }
+    const enrichedRows = isOctoRun
+      ? await enrichWithAccessories(run.env, rawSnapshot?.rows, run.accessories)
+      : rawSnapshot?.rows;
+    const enrichedSnapshot =
+      rawSnapshot && enrichedRows !== rawSnapshot.rows ? { ...rawSnapshot, rows: enrichedRows } : rawSnapshot;
 
-        if (accessorySerials.length) {
-          const accessories = await fetchAssetsByDeviceId(run.env, accessorySerials);
-          const byAccessoryId = new Map(accessories.map((a) => [a.deviceId, a]));
-
-          // Add accessories to each row
-          snapshot = {
-            ...snapshot,
-            rows: snapshot.rows.map((row) => {
-              if (!run.accessories[row.deviceId]) return row;
-
-              const deviceAccessories = [];
-              const acc = run.accessories[row.deviceId];
-              if (acc.wiredSpeaker) {
-                const accAsset = byAccessoryId.get(String(acc.wiredSpeaker)) ?? null;
-                deviceAccessories.push({
-                  type: 'Wired Speaker',
-                  serialId: acc.wiredSpeaker,
-                  present: Boolean(accAsset),
-                  // An accessory is an Asset in its own right, so its serial links to its own
-                  // record. Null until the Asset exists — `present: false` and no id are the
-                  // same fact seen from two sides.
-                  assetId: accAsset?.id ?? null,
-                  stage: classifyStage(accAsset?.idmsStatus ?? null),
-                  syncStatus: accAsset?.syncStatus ?? null,
-                  assetStatus: accAsset?.assetStatus ?? null,
-                });
-              }
-              if (acc.nativeCam) {
-                const accAsset = byAccessoryId.get(String(acc.nativeCam)) ?? null;
-                deviceAccessories.push({
-                  type: 'Native Camera',
-                  serialId: acc.nativeCam,
-                  present: Boolean(accAsset),
-                  // An accessory is an Asset in its own right, so its serial links to its own
-                  // record. Null until the Asset exists — `present: false` and no id are the
-                  // same fact seen from two sides.
-                  assetId: accAsset?.id ?? null,
-                  stage: classifyStage(accAsset?.idmsStatus ?? null),
-                  syncStatus: accAsset?.syncStatus ?? null,
-                  assetStatus: accAsset?.assetStatus ?? null,
-                });
-              }
-
-              return {
-                ...row,
-                accessories: deviceAccessories.length > 0 ? deviceAccessories : undefined,
-              };
-            }),
-          };
-
-          // The atStage split ran before this enrichment, so `snapshot.atStage.rows` still holds the
-          // pre-enrichment row objects — and that is the array the Watch page actually reads, since
-          // it spreads `{ ...fullSnapshot, ...fullSnapshot.atStage }` and `rows` is overwritten.
-          // Without this, every accessory disappears the moment any device is ahead of or behind the
-          // stage, and the completeness gate silently passes everything.
-          if (snapshot.atStage?.rows?.length) {
-            const enrichedById = new Map(snapshot.rows.map((r) => [String(r.deviceId), r]));
-            snapshot = {
-              ...snapshot,
-              atStage: {
-                ...snapshot.atStage,
-                rows: snapshot.atStage.rows.map((r) => enrichedById.get(String(r.deviceId)) ?? r),
-              },
-            };
-          }
-        }
-      } catch (err) {
-        // If accessory fetch fails, still return the snapshot without accessories
-      }
-    }
+    const snapshot = scopeSnapshot(run, req.params.stage, enrichedSnapshot);
 
     res.json({
       stage: req.params.stage,
@@ -1245,60 +1179,18 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     const operations = loadOperations();
 
     let assets = null;
-    let accessories = null;
     let readError = null;
     try {
       if (deviceIds.length) assets = await fetchAssetsByDeviceId(run.env, deviceIds);
-
-      // For Octo runs, also fetch accessory status
-      const isOctoRun = run.groups.some((g) => g.family === 'octo');
-      if (isOctoRun && run.accessories) {
-        const accessorySerials = [];
-        for (const acc of Object.values(run.accessories)) {
-          if (acc.wiredSpeaker) accessorySerials.push(acc.wiredSpeaker);
-          if (acc.nativeCam) accessorySerials.push(acc.nativeCam);
-        }
-        if (accessorySerials.length) {
-          accessories = await fetchAssetsByDeviceId(run.env, accessorySerials);
-        }
-      }
     } catch (err) {
       readError = err.message;
     }
 
     const byDeviceId = new Map((assets ?? []).map((a) => [a.deviceId, a]));
-    const byAccessoryId = new Map((accessories ?? []).map((a) => [a.deviceId, a]));
     const raw = [];
-    const devices = deviceIds.map((deviceId) => {
+    let devices = deviceIds.map((deviceId) => {
       const asset = byDeviceId.get(String(deviceId)) ?? null;
       raw.push(asset?.idmsStatus ?? null);
-
-      const deviceAccessories = [];
-      if (run.accessories && run.accessories[deviceId]) {
-        const acc = run.accessories[deviceId];
-        if (acc.wiredSpeaker) {
-          const accAsset = byAccessoryId.get(String(acc.wiredSpeaker)) ?? null;
-          deviceAccessories.push({
-            type: 'Wired Speaker',
-            serialId: acc.wiredSpeaker,
-            present: Boolean(accAsset),
-            stage: classifyStage(accAsset?.idmsStatus ?? null),
-            syncStatus: accAsset?.syncStatus ?? null,
-            assetStatus: accAsset?.assetStatus ?? null,
-          });
-        }
-        if (acc.nativeCam) {
-          const accAsset = byAccessoryId.get(String(acc.nativeCam)) ?? null;
-          deviceAccessories.push({
-            type: 'Native Camera',
-            serialId: acc.nativeCam,
-            present: Boolean(accAsset),
-            stage: classifyStage(accAsset?.idmsStatus ?? null),
-            syncStatus: accAsset?.syncStatus ?? null,
-            assetStatus: accAsset?.assetStatus ?? null,
-          });
-        }
-      }
 
       return {
         deviceId,
@@ -1308,9 +1200,16 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
         assetStatus: asset?.assetStatus ?? null,
         cpqOrderNumber: asset?.cpqOrderNumber ?? null,
         lastModifiedDate: asset?.lastModifiedDate ?? null,
-        accessories: deviceAccessories.length > 0 ? deviceAccessories : undefined,
       };
     });
+
+    // Outside the primary read's try/catch, on purpose: an accessory-fetch failure must never
+    // taint `readError` for a primary asset read that already succeeded on its own terms.
+    // `enrichWithAccessories` swallows its own failure and returns `devices` unenriched.
+    const isOctoRun = run.groups.some((g) => g.family === 'octo');
+    if (isOctoRun) {
+      devices = await enrichWithAccessories(run.env, devices, run.accessories);
+    }
 
     const stages = summariseStages(raw);
     const allTemplates = loadTemplates();
@@ -1321,8 +1220,8 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     const position = stages.unanimous;
     let next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
 
-    // For Octo family, enforce mandatory dataUpdate before shipmentUpdate
-    const isOctoRun = run.groups.some((g) => g.family === 'octo');
+    // For Octo family, enforce mandatory dataUpdate before shipmentUpdate (`isOctoRun` computed
+    // above, for the accessory enrichment gate)
     const dataUpdateSent = Object.entries(run.sends ?? {}).some(
       ([, s]) => s?.ok && s.operation === 'dataUpdate'
     );
