@@ -6,6 +6,7 @@ data/
 *.log
 .DS_Store
 docs/
+.superpowers
 
 # Saved Outlook session (Playwright storage state). Written on first sign-in.
 outlook-auth.json
