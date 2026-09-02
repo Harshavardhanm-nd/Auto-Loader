@@ -17,6 +17,7 @@
     "serial_number": {
       "type": "numeric",
       "digits": 6,
+      "unbounded": true,
       "sampleStart": "125000"
     }
   },

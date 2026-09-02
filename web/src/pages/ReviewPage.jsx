@@ -26,6 +26,11 @@ export default function ReviewPage({
   const [busy, setBusy] = React.useState(null);
   const [notice, setNotice] = React.useState(null);
   const [blocked, setBlocked] = React.useState([]);
+  const [sendAllActive, setSendAllActive] = React.useState(false);
+  const [sendAllTotal, setSendAllTotal] = React.useState(0);
+  // Families "Send all" has already tried and failed on, this run — kept out of the retry pool so
+  // a stuck family doesn't loop forever, and reported once the sequence finishes.
+  const [sendAllFailed, setSendAllFailed] = React.useState([]);
 
   const activeOperation = operation ?? run?.operation ?? 'initialLoad';
 
@@ -80,7 +85,24 @@ export default function ReviewPage({
     });
   }, [runId, run?.artifacts]);
 
-  if (!run) return <p className="muted">Loading run…</p>;
+  // A compose window left open for this operation. Held on the run rather than in page state,
+  // so navigating away and back does not lose the fact that a real email is waiting on a Send.
+  const pendingCompose =
+    run?.pendingCompose?.operation === activeOperation ? run.pendingCompose : null;
+
+  const opMeta = operations?.find((o) => o.id === activeOperation);
+  const filesForOperation = Object.entries(run?.artifacts ?? {}).filter(([key]) =>
+    key.startsWith(`${activeOperation}:`)
+  );
+
+  // Families with a generated file, not yet sent, and not blocked by placeholder config — what
+  // "Send all" walks through, one at a time, in generated order.
+  const sendableFamilies = filesForOperation
+    .map(([key]) => key.slice(activeOperation.length + 1))
+    .filter((family) => {
+      const info = opMeta?.families.find((f) => f.family === family);
+      return !run?.sends?.[`${activeOperation}:${family}`]?.ok && (info?.blockers?.length ?? 0) === 0;
+    });
 
   const generate = async () => {
     setBusy('generate');
@@ -96,7 +118,7 @@ export default function ReviewPage({
     }
   };
 
-  const send = async (family, { force = false, autoSend } = {}) => {
+  const send = async (family, { force = false, autoSend, partOfSendAll = false } = {}) => {
     setBusy(`send:${family}`);
     setNotice(null);
     try {
@@ -120,6 +142,12 @@ export default function ReviewPage({
       });
       await refreshRun();
     } catch (err) {
+      // "Send all" skips a family that fails rather than halting the whole sequence — the
+      // failure is still surfaced (onError) and recorded here so the same family isn't retried
+      // in a loop; it stays visible afterward via the failed-families notice below.
+      if (partOfSendAll) {
+        setSendAllFailed((current) => [...current, { family, message: err?.message || String(err) }]);
+      }
       onError(err);
     } finally {
       setBusy(null);
@@ -152,15 +180,30 @@ export default function ReviewPage({
     }
   };
 
-  // A compose window left open for this operation. Held on the run rather than in page state,
-  // so navigating away and back does not lose the fact that a real email is waiting on a Send.
-  const pendingCompose =
-    run.pendingCompose?.operation === activeOperation ? run.pendingCompose : null;
+  /**
+   * "Send all" walks `sendableFamilies` one at a time with `autoSend: true` — each family is
+   * composed AND sent with no pause for a manual Outlook click or a per-file confirm. A family
+   * that fails is added to `sendAllFailed` and skipped rather than retried, so the sequence
+   * always reaches the end of the list instead of stalling on one bad send. It never runs two
+   * sends at once: the next family only fires once `busy` clears from the previous one.
+   */
+  React.useEffect(() => {
+    if (!sendAllActive) return;
+    if (busy) return;
+    if (pendingCompose) return;
+    const remaining = sendableFamilies.filter(
+      (family) => !sendAllFailed.some((f) => f.family === family)
+    );
+    if (remaining.length === 0) {
+      setSendAllActive(false);
+      return;
+    }
+    send(remaining[0], { autoSend: true, partOfSendAll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendAllActive, busy, pendingCompose, sendableFamilies.join('|'), sendAllFailed]);
 
-  const opMeta = operations?.find((o) => o.id === activeOperation);
-  const filesForOperation = Object.entries(run.artifacts ?? {}).filter(([key]) =>
-    key.startsWith(`${activeOperation}:`)
-  );
+  if (!run) return <p className="muted">Loading run…</p>;
+
   const wizardFile = Object.entries(run.artifacts ?? {}).find(([key]) => key.startsWith('wizardUpload:'));
 
   return (
@@ -194,16 +237,49 @@ export default function ReviewPage({
           <>
             <button
               className="btn secondary small"
-              disabled={busy === 'generate' || Boolean(pendingCompose)}
+              disabled={busy === 'generate' || Boolean(pendingCompose) || sendAllActive}
               title={pendingCompose ? 'Confirm or discard the composed message before regenerating' : undefined}
               onClick={generate}
             >
               {busy === 'generate' ? 'Generating…' : filesForOperation.length ? 'Re-generate' : 'Generate files'}
             </button>
             {filesForOperation.length ? (
-              <button className="btn quiet small" disabled={busy === 'validate'} onClick={loadValidation}>
+              <button
+                className="btn quiet small"
+                disabled={busy === 'validate' || sendAllActive}
+                onClick={loadValidation}
+              >
                 {busy === 'validate' ? 'Checking…' : 'Re-run checks'}
               </button>
+            ) : null}
+            {sendAllActive || sendableFamilies.length > 1 ? (
+              sendAllActive ? (
+                <>
+                  <button className="btn small" disabled>
+                    Sending automatically… ({sendAllTotal - sendableFamilies.length} of {sendAllTotal})
+                  </button>
+                  <button className="btn quiet small" onClick={() => setSendAllActive(false)}>
+                    Stop
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn danger outline small"
+                  disabled={!validation?.canSend || Boolean(busy) || Boolean(pendingCompose) || sendableFamilies.length === 0}
+                  title={
+                    sendableFamilies.length === 0
+                      ? 'Every family for this operation is already sent'
+                      : `Composes and sends all ${sendableFamilies.length} remaining families automatically, one after another, with no review or Outlook click in between. A family that fails is skipped, not retried.`
+                  }
+                  onClick={() => {
+                    setSendAllFailed([]);
+                    setSendAllTotal(sendableFamilies.length);
+                    setSendAllActive(true);
+                  }}
+                >
+                  Send all ({sendableFamilies.length})
+                </button>
+              )
             ) : null}
           </>
         }
@@ -215,6 +291,9 @@ export default function ReviewPage({
             setOperation(id);
             setValidation(null);
             setBlocked([]);
+            setSendAllActive(false);
+            setSendAllTotal(0);
+            setSendAllFailed([]);
           }}
           options={(operations ?? [])
             .filter((o) => o.anySupported && o.needsMail)
@@ -270,6 +349,20 @@ export default function ReviewPage({
         ) : null}
 
       </Sheet>
+
+      {!sendAllActive && sendAllFailed.length ? (
+        <Callout tone="warn" title={`Send all: ${sendAllFailed.length} of ${sendAllTotal} skipped after failing`}>
+          {sendAllFailed.map((f) => (
+            <div key={f.family} style={{ marginBottom: '0.4rem' }}>
+              <strong style={{ display: 'inline' }}>{f.family}</strong> — {f.message}
+            </div>
+          ))}
+          <p className="prose small" style={{ marginTop: '0.4rem' }}>
+            These were not sent. Retry each one individually below once the underlying issue is
+            fixed.
+          </p>
+        </Callout>
+      ) : null}
 
       {blocked.length ? (
         <Callout tone="warn" title="Some families produced no file">
@@ -363,7 +456,8 @@ export default function ReviewPage({
               alreadySent={run.sends?.[key]}
               to={familyInfo?.to}
               blockers={familyInfo?.blockers ?? []}
-              canSend={validation?.canSend && !busy && (familyInfo?.blockers?.length ?? 0) === 0}
+              canSend={validation?.canSend && !busy && !sendAllActive && (familyInfo?.blockers?.length ?? 0) === 0}
+              sendAllActive={sendAllActive}
               // Busy covers the confirmation too, not just the send: the compose-and-stop is
               // still in flight until Sent Items has been checked, and leaving the button live
               // in between invites a second click that composes the same file again.
@@ -428,6 +522,7 @@ function FileCard({
   transport,
   autoSendDefault,
   note,
+  sendAllActive,
 }) {
   const [showBytes, setShowBytes] = React.useState(false);
   const outlook = transport === 'outlook-web';
@@ -466,7 +561,7 @@ function FileCard({
                       button carries the same lifecycle as the first-time one. */}
                   <button
                     className="btn danger outline small"
-                    disabled={busy || awaitingConfirm}
+                    disabled={busy || awaitingConfirm || sendAllActive}
                     onClick={() => {
                       if (
                         window.confirm(

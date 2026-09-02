@@ -17,16 +17,19 @@
     "device_id": {
       "type": "numeric",
       "digits": 11,
+      "unbounded": true,
       "sampleStart": "22513162190"
     },
     "sim_serial": {
       "type": "numeric",
       "digits": 11,
+      "unbounded": true,
       "sampleStart": "22600378200"
     },
     "device_imei": {
       "type": "numeric",
       "digits": 11,
+      "unbounded": true,
       "sampleStart": "22600478210"
     }
   },

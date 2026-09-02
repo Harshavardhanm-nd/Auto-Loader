@@ -33,9 +33,14 @@ const MAX_ATTEMPTS = 8;
 /** Ids probed past the block itself, so one round trip can step over a batch loaded earlier. */
 const LOOKAHEAD = 250;
 
-/** A numeric series' width is fixed, so it can only hold so many more blocks. */
-function numericCeiling(digits) {
-  return 10 ** digits - 1;
+/**
+ * A numeric series' width is fixed, so it can only hold so many more blocks — unless the
+ * descriptor declares `unbounded: true`, meaning this series is allowed to grow past its
+ * `digits` width rather than being capped there (Haptic's accessory serials do this).
+ */
+function numericCeiling(def) {
+  if (def.unbounded) return Infinity;
+  return 10 ** def.digits - 1;
 }
 
 function loadCounters() {
@@ -197,7 +202,7 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
 /** A numeric series can only hold so many more ids; refuse before minting a narrow one. */
 function assertHeadroom(series, starts, n) {
   for (const [name, def] of Object.entries(series)) {
-    if (def.type === 'numeric' && starts[name] + n - 1 > numericCeiling(def.digits)) {
+    if (def.type === 'numeric' && starts[name] + n - 1 > numericCeiling(def)) {
       throw new Error(
         `Series "${name}" would overflow ${def.digits} digits at ${starts[name] + n - 1}. ` +
           'Reset this series\' counter on the Ids screen.'
@@ -210,7 +215,7 @@ function assertHeadroom(series, starts, n) {
 function probeSpan(def, start, n) {
   const want = n + LOOKAHEAD;
   if (def.type !== 'numeric') return want;
-  const room = numericCeiling(def.digits) - start + 1;
+  const room = numericCeiling(def) - start + 1;
   return Math.max(n, Math.min(want, room));
 }
 
@@ -271,8 +276,20 @@ export function validateRows(rows, series, primarySeriesName) {
         problems.push(`row ${rowNo}: ${name} is empty`);
         continue;
       }
-      if (def.type === 'numeric' && !new RegExp(`^\\d{${def.digits}}$`).test(value)) {
-        problems.push(`row ${rowNo}: ${name} "${value}" is not ${def.digits} digits`);
+      if (def.type === 'numeric') {
+        // `anyLength` drops the width check entirely — for a series whose real-world values
+        // (an id already in the org, or a manually-set cursor) are legitimately shorter or
+        // longer than `digits`. `digits` itself is untouched: it still sizes the overflow
+        // ceiling and the collision-query candidates for freshly minted ids.
+        if (def.anyLength) {
+          if (!/^\d+$/.test(value)) problems.push(`row ${rowNo}: ${name} "${value}" is not numeric`);
+        } else {
+          const pattern = def.unbounded ? `^\\d{${def.digits},}$` : `^\\d{${def.digits}}$`;
+          if (!new RegExp(pattern).test(value)) {
+            const expected = def.unbounded ? `at least ${def.digits}` : def.digits;
+            problems.push(`row ${rowNo}: ${name} "${value}" is not ${expected} digits`);
+          }
+        }
       }
       if (def.type === 'prefixed' && !value.startsWith(def.prefix)) {
         problems.push(`row ${rowNo}: ${name} "${value}" does not start with "${def.prefix}"`);
