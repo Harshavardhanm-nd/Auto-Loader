@@ -319,7 +319,7 @@ runsRouter.post('/:runId/cursors/set', (req, res, next) => {
     const template = getTemplate(templateId);
     const def = template.series?.[seriesName];
     if (!def) throw Object.assign(new Error(`Unknown series "${seriesName}" on "${templateId}"`), { status: 400 });
-    if (def.digits && n > (10 ** def.digits - 1)) throw Object.assign(new Error(`Value exceeds ${def.digits}-digit limit`), { status: 400 });
+    if (def.digits && !def.unbounded && n > (10 ** def.digits - 1)) throw Object.assign(new Error(`Value exceeds ${def.digits}-digit limit`), { status: 400 });
     setCursor(run.env, templateId, seriesName, n);
     res.json({ set: true, value: n });
   } catch (err) {

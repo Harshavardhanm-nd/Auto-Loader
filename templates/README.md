@@ -73,7 +73,10 @@ is indistinguishable from a file that has already been accepted.
 ### Series types
 
 - `numeric` — `sampleStart` plus an offset, zero-padded to `digits`. Checked against
-  `Asset.Name` before use.
+  `Asset.Name` before use. Add `"unbounded": true` if this series is allowed to grow past
+  `digits` width rather than being capped there (Haptic's `serial_number` does this — its
+  accessory serials are not fixed at 6 digits). `digits` still sets the *minimum* width and the
+  URL-budget estimate in `collisionChunkSize`; only the overflow refusal is lifted.
 - `prefixed` — `prefix` plus a decimal counter. Used for Octo's `wifi_mac` / `bt_mac`, which
   look like MAC addresses but are a fixed prefix plus a counter (`…05:c7`, `…05:c8`, …
   `…05:c16`) rather than hex arithmetic. Not collision-checked, since these are not asset
