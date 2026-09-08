@@ -167,7 +167,7 @@ export default function App() {
         <div className="brand">
           <ContainerMark />
           <span>
-            <span className="mark">Auto Loader</span>
+            <span className="mark">Asset Loader</span>
             <span className="eyebrow sub">Device ledger</span>
           </span>
         </div>
@@ -404,7 +404,10 @@ function useTheme() {
   const [theme, setTheme] = React.useState(() => {
     try {
       // Anything stored under the previous palette's names falls back to light.
-      const saved = localStorage.getItem('autoloader.theme');
+      // `autoloader.theme` is the pre-rename key: read it as a fallback so an operator's saved
+      // choice survives the rename rather than silently reverting to light on their next visit.
+      const saved =
+        localStorage.getItem('assetloader.theme') ?? localStorage.getItem('autoloader.theme');
       return saved === 'light' || saved === 'dark' ? saved : 'light';
     } catch {
       return 'light';
@@ -414,7 +417,7 @@ function useTheme() {
   React.useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try {
-      localStorage.setItem('autoloader.theme', theme);
+      localStorage.setItem('assetloader.theme', theme);
     } catch {
       /* private mode — the choice just does not persist */
     }

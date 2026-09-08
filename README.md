@@ -1,6 +1,6 @@
-# Auto Loader — user guide
+# Asset Loader — user guide
 
-Auto Loader replaces the manual CSV-and-email steps of the Netradyne device fulfilment flow. You
+Asset Loader replaces the manual CSV-and-email steps of the Netradyne device fulfilment flow. You
 pick product families, SKUs and quantities; it generates the byte-exact CSVs, emails each one to
 the right distribution list, watches Salesforce until the devices appear, and hands back the ids
 that actually loaded.

@@ -17,8 +17,9 @@
   "series": {
     "serial_number": {
       "type": "numeric",
-      "digits": 11,
+      "digits": 10,
       "unbounded": true,
+      "anyLength": true,
       "sampleStart": "1100401221"
     },
     "mac_id": {

@@ -67,7 +67,7 @@ app.use((err, req, res, next) => {
 
 const port = Number(process.env.PORT) || 4317;
 app.listen(port, () => {
-  console.log(`Auto_Loader server on http://localhost:${port}`);
+  console.log(`Asset Loader server on http://localhost:${port}`);
   const awaiting = loadTemplates().filter((t) => t.status !== 'verified');
   if (awaiting.length) {
     console.log(

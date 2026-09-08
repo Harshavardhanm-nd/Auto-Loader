@@ -1,6 +1,7 @@
 import React from 'react';
 import { api } from '../api.js';
 import { Badge, Callout, Explainer, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spinner } from '../components/ui.jsx';
+import { partitionHandoff } from '../lib/handoff.js';
 
 /**
  * Polling view.
@@ -293,20 +294,31 @@ export default function WatchPage({
   const sendsForStage = Object.values(run.sends ?? {}).filter((s) => s.operation === stage && s.ok);
   const unitCount = run.groups.reduce((n, g) => n + g.lines.reduce((m, l) => m + l.deviceCount, 0), 0);
 
-  /** Families in this run, deduplicated. A run may hold several. */
-  const runFamilies = [...new Set((run.groups ?? []).map((g) => g.family).filter(Boolean))];
+  /**
+   * The stage-step model, in the shape `partitionHandoff` reads.
+   *
+   * `successStatus` is built from the same `model.operations` the tab strip is built from, so the
+   * status that releases a device from a step and the status its tab polls for cannot drift apart.
+   *
+   * There is no run-level family check here any more. Asking "does this run hold an Octo group"
+   * answered for every device in the run at once, which is how a mixed run's Driveri devices came
+   * to be routed to Octo's data update.
+   */
+  const stepModel = {
+    stageSteps: model?.stageSteps ?? [],
+    successStatus: Object.fromEntries(stages.map((s) => [s.id, s.success])),
+  };
 
   /**
-   * The stage step some family in this run must finish before `operation`, or null.
+   * The label the run's own group declares for a family.
    *
-   * Checked per group rather than per run: the rule this replaces was
-   * `groups.every(g => g.family === 'octo')`, which read a mixed-family run as non-Octo and
-   * skipped the step for its Octo devices.
+   * Read from the run rather than re-cased here: `DHUB` and `VBUS` are literal strings the org
+   * uses, and re-deriving them from the key would print `Dhub`.
    */
-  const stepRequiredBefore = (operation) =>
-    (model?.stageSteps ?? []).find(
-      (s) => s.before === operation && (s.requiredFor ?? []).some((f) => runFamilies.includes(f))
-    ) ?? null;
+  const familyLabels = Object.fromEntries(
+    (run.groups ?? []).map((g) => [g.family, g.familyLabel ?? g.family])
+  );
+  const familyLabel = (family) => familyLabels[family] ?? family ?? 'unknown family';
 
   /**
    * Is a related asset synced?
@@ -331,27 +343,24 @@ export default function WatchPage({
     (r) => (r.accessories ?? []).length > 0 && !accessoriesComplete(r)
   );
 
-  // Rows eligible for shipment update: at Pre-Production and fully synced. A family that owes a
-  // stage step first (Octo owes its data update) is only eligible to leave the *data-update* tab
-  // for shipment update once that step's own success status is on the device — an initial-load
-  // success is not enough to skip it. This is scoped to `stage === 'dataUpdate'` rather than
-  // applied everywhere: on the initial-load tab a device that owes the step is never offered
-  // shipment update in the first place (`getNextOperation` below routes it to the owed operation
-  // instead), so requiring DATA_UPDATE_SYNC_SUCCESS there as well only withheld the very first
-  // hand-off Octo needs, without withholding anything real — a device that has actually reached
-  // DATA_UPDATE_SYNC_SUCCESS is aheadOfStage relative to the initial-load tab and is not in this
-  // snapshot at all.
-  const owesBeforeShipment = stepRequiredBefore('shipmentUpdate');
-  const shipmentEligibleRows = (snapshot?.rows ?? []).filter((r) => {
+  // Rows that can be handed on from this tab: at Pre-Production, loaded or data-updated, and with
+  // every accessory synced. Which operation each of them may be handed *to* is decided per device
+  // by `partitionHandoff`, from the row's own family — a device carries its family on the row now,
+  // stamped by the poll route from the group that minted its id.
+  const advanceEligibleRows = (snapshot?.rows ?? []).filter((r) => {
     if (stage !== 'initialLoad' && stage !== 'dataUpdate') return false;
     if (Number(r.idmsStatus) !== -2) return false;
     if (!accessoriesComplete(r)) return false;
-    if (stage === 'dataUpdate' && owesBeforeShipment) return r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS';
     return (
       r.syncStatus === 'INITIAL_DEVICE_LOAD_SYNC_SUCCESS' ||
       r.syncStatus === 'DATA_UPDATE_SYNC_SUCCESS'
     );
   });
+
+  // Two buckets, and a device can be in both: every eligible device may take a data update, and
+  // every one that does not still owe a stage step may take a shipment update. Octo owes its data
+  // update, so it appears only under Data Update until the org writes DATA_UPDATE_SYNC_SUCCESS.
+  const advanceBuckets = partitionHandoff(advanceEligibleRows, stepModel);
 
   // Rows eligible for received at 3PL: IDMS -1 + shipment update synced.
   const receivedEligibleRows = (snapshot?.rows ?? []).filter(
@@ -372,8 +381,8 @@ export default function WatchPage({
   );
 
   const eligibleRows =
-    shipmentEligibleRows.length > 0
-      ? shipmentEligibleRows
+    advanceEligibleRows.length > 0
+      ? advanceEligibleRows
       : receivedEligibleRows.length > 0
       ? receivedEligibleRows
       : deadEligibleRows.length > 0
@@ -397,26 +406,20 @@ export default function WatchPage({
     }
   };
 
-  const getNextOperation = () => {
-    if (stage === 'dataUpdate') return 'shipmentUpdate';
-    // A family that owes a step before shipment update is sent to that step first. The rule is in
-    // config/lifecycle.json, not here — this reads it.
-    const owed = stepRequiredBefore('shipmentUpdate');
-    if (stage === 'initialLoad' && owed) return owed.operation;
-    return 'shipmentUpdate';
-  };
-
-  const sendToNextOperation = async () => {
-    const operation = getNextOperation();
-    const busyKey = `${operation}Gen`;
-    const operationLabel = operation === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
-
-    setBusy(busyKey);
+  /**
+   * Generate `operation` for exactly `deviceIds`, then hand the operator to Review.
+   *
+   * The ids are the ticked rows *this operation covers*, not every ticked row. An Octo device
+   * ticked alongside a Driveri one belongs in the data-update file and not in the shipment-update
+   * file; sending the whole selection to both is what produced `blocked` families and left the
+   * other family with nothing written and no offered way forward.
+   */
+  const generateFor = async (operation, deviceIds) => {
+    setBusy(`${operation}Gen`);
     try {
-      const result = await api.generate(runId, operation, [...selected]);
-      // `blocked` names families the operation could not be written for — a mixed run whose
-      // non-Octo groups have no data-update sheet, say. Navigating without saying so tells the
-      // operator every ticked device was covered when some were skipped.
+      const result = await api.generate(runId, operation, deviceIds);
+      // `blocked` names families the operation could not be written for. With the ids now scoped
+      // per operation this should not fire on a mixed run, so if it does it is real news.
       if (result?.blocked?.length) {
         const families = result.blocked.map((b) => b.familyLabel ?? b.family).join(', ');
         onError(new Error(`Nothing was written for ${families}. ${result.blocked[0].message}`));
@@ -430,46 +433,11 @@ export default function WatchPage({
     }
   };
 
-  const sendToShipmentUpdate = sendToNextOperation;
+  const sendToReceived = (deviceIds = [...selected]) => generateFor('received', deviceIds);
 
-  const sendToReceived = async () => {
-    setBusy('receivedGen');
-    try {
-      await api.generate(runId, 'received', [...selected]);
-      await refreshRun();
-      goto('review', { operation: 'received' });
-    } catch (err) {
-      onError(err);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const sendToRmaReturned = (deviceIds = [...selected]) => generateFor('rmaReturned', deviceIds);
 
-  const sendToRmaReturned = async () => {
-    setBusy('rmaReturnedGen');
-    try {
-      await api.generate(runId, 'rmaReturned', [...selected]);
-      await refreshRun();
-      goto('review', { operation: 'rmaReturned' });
-    } catch (err) {
-      onError(err);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const sendToDeviceDead = async () => {
-    setBusy('deviceDeadGen');
-    try {
-      await api.generate(runId, 'deviceDead', [...selected]);
-      await refreshRun();
-      goto('review', { operation: 'deviceDead' });
-    } catch (err) {
-      onError(err);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const sendToDeviceDead = (deviceIds = [...selected]) => generateFor('deviceDead', deviceIds);
 
   /**
    * The hand-off this stage offers for the ticked devices: which operation, what to call it, and
@@ -481,46 +449,79 @@ export default function WatchPage({
    * whether it was truthy, then rendered a second identical one, with a stray console.log between
    * them — same order of precedence, now stated once.
    */
-  const handoff = (() => {
-    // Read from the run's families rather than `groups.every(...)`, which called a mixed run
-    // non-Octo and offered Received at 3PL to its Octo devices — the same per-run mistake
-    // `stepRequiredBefore` above exists to correct.
-    //
-    // Still not per *device*: a run holding both Octo and Driveri groups withholds Received at 3PL
-    // from all of them, where only the Octo ones should carry on past it. Scoping eligibility by
-    // each device's own family needs the browser to map device id -> family, which this change does
-    // not do. Erring toward withholding is the safe half of that: a send not offered is a click
-    // away, a send offered wrongly is an email.
+  /** `Octo ×3 · Haptic ×2` — who a button actually covers, so the count is never anonymous. */
+  const summariseFamilies = (rows) => {
+    const counts = new Map();
+    for (const r of rows) {
+      const key = r.family ?? 'unknown family';
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts].map(([family, n]) => `${familyLabel(family)} \u00d7${n}`).join(' \u00b7 ');
+  };
+
+  /**
+   * The hand-offs this stage offers for the ticked devices: which operations, and over which of
+   * them each one acts.
+   *
+   * A list rather than a single answer. One selection can legitimately owe two different next
+   * steps — a data update for the Octo devices in it and a shipment update for the rest — and
+   * collapsing that into one button is what forced every device down the path of whichever family
+   * the run happened to contain. Each entry generates only for the ids it names, so no press can
+   * reach a family that has no sheet for it.
+   *
+   * Mark Dead and Received at 3PL stay single: they are reached from their own stage tab, where
+   * every eligible row is at the same point by construction.
+   */
+  const handoffs = (() => {
+    const ticked = (rows) => rows.filter((r) => selected.has(r.deviceId));
+
     if (deadEligibleRows.length > 0) {
-      return {
+      const rows = ticked(deadEligibleRows);
+      return rows.length === 0 ? [] : [{
         operation: 'deviceDead',
         operationLabel: 'Mark Dead',
-        description: 'Non-repairable at the repair partner — same devices, same ids.',
+        description: 'Non-repairable at the repair partner \u2014 same devices, same ids.',
         actionLabel: 'Move to Dead',
-        busyKey: 'deviceDeadGen',
-        onClick: sendToDeviceDead,
-      };
+        rows,
+      }];
     }
+
     if (receivedEligibleRows.length > 0) {
-      return {
+      const rows = ticked(receivedEligibleRows);
+      return rows.length === 0 ? [] : [{
         operation: 'received',
         operationLabel: 'Received at 3PL',
         description: 'Same devices, same ids, one more email.',
         actionLabel: 'Send to Received at 3PL',
-        busyKey: 'receivedGen',
-        onClick: sendToReceived,
-      };
+        rows,
+      }];
     }
-    const nextOp = getNextOperation();
-    const nextOpLabel = nextOp === 'dataUpdate' ? 'Data Update' : 'Shipment Update';
-    return {
-      operation: nextOp,
-      operationLabel: nextOpLabel,
-      description: 'Same devices, same ids, one more email.',
-      actionLabel: `Generate ${nextOpLabel} CSV`,
-      busyKey: `${nextOp}Gen`,
-      onClick: sendToNextOperation,
-    };
+
+    const forDataUpdate = ticked(advanceBuckets.dataUpdate);
+    const forShipment = ticked(advanceBuckets.shipmentUpdate);
+    const shipmentIds = new Set(forShipment.map((r) => r.deviceId));
+    const withheld = forDataUpdate.filter((r) => !shipmentIds.has(r.deviceId));
+
+    return [
+      {
+        operation: 'dataUpdate',
+        operationLabel: 'Data Update',
+        description: withheld.length
+          ? `${summariseFamilies(withheld)} must be data-updated before shipping. The rest may take one, or go straight to shipment update.`
+          : 'Optional \u2014 corrects device data without moving the device. Same ids, one more email.',
+        actionLabel: 'Generate Data Update CSV',
+        rows: forDataUpdate,
+      },
+      {
+        operation: 'shipmentUpdate',
+        operationLabel: 'Shipment update',
+        description: withheld.length
+          ? `Same devices, same ids, one more email. ${summariseFamilies(withheld)} not included \u2014 still owed a data update.`
+          : 'Same devices, same ids, one more email.',
+        actionLabel: 'Generate Shipment Update CSV',
+        rows: forShipment,
+      },
+    ].filter((h) => h.rows.length > 0);
   })();
 
   // Toggle a single device in the rmaInitiated view tab selection.
@@ -689,7 +690,7 @@ export default function WatchPage({
             description="Faulty devices received back at the repair partner — same devices, same ids."
             count={selected.size}
             busy={busy === 'rmaReturnedGen'}
-            onClick={sendToRmaReturned}
+            onClick={() => sendToRmaReturned()}
             actionLabel="Send to RMA Returned"
           />
         </Sheet>
@@ -703,7 +704,7 @@ export default function WatchPage({
             description="Non-repairable at the repair partner — same devices, same ids."
             count={selected.size}
             busy={busy === 'deviceDeadGen'}
-            onClick={sendToDeviceDead}
+            onClick={() => sendToDeviceDead()}
             actionLabel="Move to Dead"
           />
         </Sheet>
@@ -954,17 +955,21 @@ export default function WatchPage({
             </Callout>
           ) : null}
 
-          {selected.size > 0 && handoff && stage !== 'received' ? (
+          {handoffs.length > 0 && stage !== 'received' ? (
             <Sheet>
-              <NextStepAction
-                operationLabel={handoff.operationLabel}
-                toLabel={nextStageLabel(handoff.operation)}
-                description={handoff.description}
-                count={selected.size}
-                busy={busy === handoff.busyKey}
-                onClick={handoff.onClick}
-                actionLabel={handoff.actionLabel}
-              />
+              {handoffs.map((h) => (
+                <NextStepAction
+                  key={h.operation}
+                  operationLabel={h.operationLabel}
+                  toLabel={nextStageLabel(h.operation)}
+                  description={h.description}
+                  count={h.rows.length}
+                  families={summariseFamilies(h.rows)}
+                  busy={busy === `${h.operation}Gen`}
+                  onClick={() => generateFor(h.operation, h.rows.map((r) => r.deviceId))}
+                  actionLabel={h.actionLabel}
+                />
+              ))}
             </Sheet>
           ) : null}
 
@@ -1072,7 +1077,7 @@ export default function WatchPage({
           goto={goto}
           // Suppressed while the hand-off above is already offering it, so one step is not
           // announced twice in the same layout — once with a button and once without.
-          offeredAbove={selected.size > 0 ? handoff?.operation : null}
+          offeredAbove={handoffs.map((h) => h.operation)}
         /> : null}
 
       {run.result ? (
@@ -1332,12 +1337,12 @@ function StageCell({ stage, idmsStatus }) {
  * Installer App, the customer, or the order integration. Saying so is the point: it is the
  * difference between the app looking stuck and the app being finished with its part.
  */
-function NextStep({ position, goto, offeredAbove = null }) {
+function NextStep({ position, goto, offeredAbove = [] }) {
   const { position: pos, stages } = position;
   const next = position.next ?? { mine: [], theirs: [] };
   // The hand-off panel above already offers this operation, with the ticked devices attached.
   // Listing it again here would announce one step twice in the same layout.
-  const mine = next.mine.filter((step) => step.operation !== offeredAbove);
+  const mine = next.mine.filter((step) => !offeredAbove.includes(step.operation));
 
   return (
     <Sheet
@@ -1565,7 +1570,7 @@ function ResultCard({ run, runId, refreshRun, onError }) {
  * generates for **exactly** the ticked devices, so a hand-off raised for a subset carries that
  * subset and no more. Ticking the header checkbox is how you send them all.
  */
-function NextStepAction({ operationLabel, toLabel, description, count, busy, onClick, actionLabel }) {
+function NextStepAction({ operationLabel, toLabel, description, count, families, busy, onClick, actionLabel }) {
   return (
     <div className="lc-next">
       <div style={{ minWidth: 0 }}>
@@ -1573,8 +1578,11 @@ function NextStepAction({ operationLabel, toLabel, description, count, busy, onC
           <strong>{operationLabel}</strong>
           {toLabel ? <span className="muted small">→ {toLabel}</span> : null}
           <Badge tone="info">
-            {count} device{count !== 1 ? 's' : ''} selected
+            {count} device{count !== 1 ? 's' : ''}
           </Badge>
+          {/* Two buttons can be on screen at once over different devices, so a bare count is
+              ambiguous — naming the families says which devices this one actually covers. */}
+          {families ? <span className="muted small">{families}</span> : null}
         </div>
         <div className="muted small">{description}</div>
       </div>

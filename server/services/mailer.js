@@ -294,7 +294,7 @@ async function openSentMailbox(client, preferred) {
  * SMTP would have transmitted.
  */
 export function buildEml({ from, to, subject, body, attachment }) {
-  const boundary = `----=_AutoLoader_${Buffer.from(subject).toString('hex').slice(0, 16)}`;
+  const boundary = `----=_AssetLoader_${Buffer.from(subject).toString('hex').slice(0, 16)}`;
   const b64 = attachment.content.toString('base64').replace(/(.{76})/g, '$1\r\n');
 
   return Buffer.from(
