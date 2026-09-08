@@ -9,6 +9,10 @@ import {
   saveArtifact,
   loadArtifact,
   deleteRun,
+  claimSend,
+  releaseSend,
+  archiveCurrentSend,
+  sendsForKey,
 } from '../services/run-store.js';
 import { allocateSeries, describeCursors, resetCursor, setCursor, primarySeriesOf } from '../services/id-generator.js';
 import { buildCsv, planGeneratedRows, planWizardRows, planExistingRows, planDeadRows } from '../services/csv-builder.js';
@@ -22,6 +26,7 @@ import {
   splitByStagePosition,
 } from '../services/sf-client.js';
 import { enrichWithAccessories } from '../services/accessory-enrichment.js';
+import { deviceFamilyMap, attachFamilies } from '../services/device-families.js';
 import { readSession } from '../services/sf-session.js';
 import { deliver, buildEml, describeSmtp } from '../services/mailer.js';
 import { checkSentItems, closeOutlook } from '../services/outlook-web-service.js';
@@ -47,11 +52,13 @@ import {
   syncStatusBase,
   classifyStage,
   stageByCode,
+  requiredStepsBefore,
 } from '../lib/lifecycle.js';
 import {
   getEnvironment,
   getTemplate,
   findTemplate,
+  findTemplateOrNull,
   loadTemplates,
   loadOperations,
   resolveDistributionList,
@@ -525,17 +532,9 @@ runsRouter.post('/:runId/generate', async (req, res, next) => {
       const ids = deviceIdsFilter ? allIds.filter((id) => deviceIdsFilter.has(String(id))) : allIds;
       if (!ids.length) throw new Error('Select devices at IDMS 7 before generating the Dead CSV.');
 
-      // Build id→family from generatedRows so each device carries its own group's type.
-      const idToFamily = new Map();
-      for (const group of run.groups) {
-        const primary = group.primarySeries ?? primarySeriesOf(getTemplate(group.templateId));
-        if (!primary) continue;
-        for (const line of group.lines) {
-          for (const row of line.generatedRows ?? []) {
-            if (row[primary]) idToFamily.set(String(row[primary]), group.family);
-          }
-        }
-      }
+      // Each device carries its own group's type. One walk, shared with the poll route, which
+      // stamps the same map onto snapshot rows.
+      const idToFamily = deviceFamilyMap(run);
 
       const deviceEntries = ids.map((id) => ({
         deviceId: id,
@@ -823,6 +822,9 @@ runsRouter.get('/:runId/validate', async (req, res, next) => {
 // ---------------------------------------------------------------------------
 
 runsRouter.post('/:runId/send', async (req, res, next) => {
+  // Held outside the try so the `finally` can release it on every exit path — including the
+  // compose-and-stop branch, which returns early.
+  let claimed = null;
   try {
     const run = getRun(req.params.runId);
     const { operation, family, force = false } = req.body ?? {};
@@ -842,10 +844,25 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
     const key = artifactKey(operation, family);
     const artifact = loadArtifact(run.runId, key);
 
+    // Take the pipeline before anything slow happens. The duplicate check below reads run
+    // state and the `deliver()` after it takes seconds, so without an exclusive hold every
+    // request arriving inside that window reads "not sent yet" and sends. `force` overrides the
+    // duplicate guard but never the claim: two concurrent forced sends are still two loads.
+    if (!claimSend(run.runId, key)) {
+      throw new Error(
+        `A send for ${operation}/${family} is already in flight — it may already have gone out. ` +
+          'Wait for it to finish, then check Sent Items before retrying.'
+      );
+    }
+    claimed = { runId: run.runId, key };
+
+    // Re-read after claiming: the snapshot above predates the claim, so a send that completed
+    // while this request was queued behind it would otherwise still look unsent here.
+    const current = getRun(run.runId);
     if (!force) {
       const duplicate = duplicateSendReason({
-        currentSend: run.sends?.[key],
-        archivedSends: run.sendHistory?.[key] ?? [],
+        currentSend: current.sends?.[key],
+        archivedSends: current.sendHistory?.[key] ?? [],
         artifact,
       });
       if (duplicate) throw new Error(duplicate);
@@ -904,6 +921,10 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
     }
 
     const updated = updateRun(run.runId, (r) => {
+      // Never overwrite a send out of existence: the record it replaces is evidence that those
+      // devices reached the org. Reached when a send is forced past the duplicate guard, or when
+      // a compose is confirmed over an earlier one.
+      archiveCurrentSend(r, key);
       r.sends[key] = {
         ok: true,
         operation,
@@ -940,6 +961,8 @@ runsRouter.post('/:runId/send', async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  } finally {
+    if (claimed) releaseSend(claimed.runId, claimed.key);
   }
 });
 
@@ -982,6 +1005,10 @@ runsRouter.post('/:runId/send/confirm', async (req, res, next) => {
     }
 
     const updated = updateRun(run.runId, (r) => {
+      // Never overwrite a send out of existence: the record it replaces is evidence that those
+      // devices reached the org. Reached when a send is forced past the duplicate guard, or when
+      // a compose is confirmed over an earlier one.
+      archiveCurrentSend(r, key);
       r.sends[key] = {
         ok: true,
         operation,
@@ -1116,10 +1143,18 @@ runsRouter.get('/:runId/poll/:stage', async (req, res, next) => {
     const enrichedRows = isOctoRun
       ? await enrichWithAccessories(run.env, rawSnapshot?.rows, run.accessories)
       : rawSnapshot?.rows;
-    const enrichedSnapshot =
-      rawSnapshot && enrichedRows !== rawSnapshot.rows ? { ...rawSnapshot, rows: enrichedRows } : rawSnapshot;
 
-    const snapshot = scopeSnapshot(run, req.params.stage, enrichedSnapshot);
+    // Each row carries the family that minted its id. Stamped at read time, alongside the
+    // accessory decoration and for the same reason: a snapshot is written once and read many
+    // times, so one taken before this existed would otherwise never gain it. The Watch page's
+    // hand-off rules are per family — Octo owes a data update before it ships — and without this
+    // the browser could only ask whether the *run* held an Octo group, which held that run's
+    // other families behind Octo's step.
+    const decoratedRows = attachFamilies(enrichedRows, deviceFamilyMap(run));
+    const decoratedSnapshot =
+      rawSnapshot && decoratedRows !== rawSnapshot.rows ? { ...rawSnapshot, rows: decoratedRows } : rawSnapshot;
+
+    const snapshot = scopeSnapshot(run, req.params.stage, decoratedSnapshot);
 
     res.json({
       stage: req.params.stage,
@@ -1212,7 +1247,6 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     }
 
     const stages = summariseStages(raw);
-    const allTemplates = loadTemplates();
 
     // The next step is only a single answer while every device shares a stage. A split run gets
     // the stages listed instead of a suggestion, because acting on the majority would leave the
@@ -1220,15 +1254,25 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
     const position = stages.unanimous;
     let next = position?.known ? nextFrom(position.code) : { mine: [], theirs: [] };
 
-    // For Octo family, enforce mandatory dataUpdate before shipmentUpdate (`isOctoRun` computed
-    // above, for the accessory enrichment gate)
+    // A stage step some family owes before it may ship — Octo corrects device data at
+    // Pre-Production — is withheld here only when *every* group in the run owes it.
+    //
+    // This panel answers for the run as a whole, so it can only speak when the answer is the same
+    // for every device in it. Gating on "the run contains an Octo group" told a mixed run that its
+    // Driveri devices had no next step but a data update they do not owe, and the operator's only
+    // way past it was Review's own operation selector, which generates for the whole run and drops
+    // the device subset. A mixed run now gets both operations listed, and the Watch page splits
+    // them per device.
+    const stepsOwedBeforeShipment = (family) => requiredStepsBefore('shipmentUpdate', family);
+    const everyGroupOwesAStep =
+      run.groups.length > 0 && run.groups.every((g) => stepsOwedBeforeShipment(g.family).length > 0);
     const dataUpdateSent = Object.entries(run.sends ?? {}).some(
       ([, s]) => s?.ok && s.operation === 'dataUpdate'
     );
-    if (isOctoRun && !dataUpdateSent && position?.code === -2) {
-      // Filter to only show dataUpdate, hide shipmentUpdate for Octo until dataUpdate is sent
+    if (everyGroupOwesAStep && !dataUpdateSent && position?.code === -2) {
+      const owed = new Set(run.groups.flatMap((g) => stepsOwedBeforeShipment(g.family)));
       next = {
-        mine: next.mine.filter((step) => step.operation === 'dataUpdate'),
+        mine: next.mine.filter((step) => owed.has(step.operation)),
         theirs: next.theirs,
       };
     }
@@ -1250,8 +1294,8 @@ runsRouter.get('/:runId/lifecycle', async (req, res, next) => {
         // and a configured mailbox, and four of them have a mailbox but no sheet yet.
         mine: next.mine.map((step) => {
           const rows = isSharedOperation(step.operation)
-            ? [buildRow(SHARED_FAMILY, 'Any family', step.operation, allTemplates, run)]
-            : run.groups.map((g) => buildRow(g.family, g.familyLabel, step.operation, allTemplates, run));
+            ? [buildRow(SHARED_FAMILY, 'Any family', step.operation, run)]
+            : run.groups.map((g) => buildRow(g.family, g.familyLabel, step.operation, run));
           return {
             ...step,
             operationLabel: operations[step.operation]?.label ?? step.operation,
@@ -1335,12 +1379,11 @@ runsRouter.get('/:runId/result', (req, res, next) => {
   }
 });
 
-function buildRow(family, familyLabel, operation, allTemplates, run) {
-  const template =
-    allTemplates.find((t) => t.family === family && t.operation === operation) ??
-    (family === SHARED_FAMILY
-      ? null
-      : allTemplates.find((t) => t.family === SHARED_FAMILY && t.operation === operation));
+function buildRow(family, familyLabel, operation, run) {
+  // One resolution path, shared with generation: a template derived from the family's own sheet
+  // for another operation is as real as a declared one, and listing from the raw files would
+  // report it as unsupported on a run Watch had just generated it for.
+  const template = findTemplateOrNull(family, operation);
 
   const key = artifactKey(operation, family);
   let dl = null;
@@ -1362,6 +1405,9 @@ function buildRow(family, familyLabel, operation, allTemplates, run) {
     usable: template?.status === 'verified',
     generated: Boolean(run.artifacts?.[key]),
     sent: Boolean(run.sends?.[key]?.ok),
+    // How many emails this pipeline has actually produced. Anything above 1 is a device loaded
+    // more than once, and the operator has to be able to see that without reading the event log.
+    sendCount: sendsForKey(run, key).filter((x) => x?.ok).length,
     to: dl?.to ?? null,
     blockers,
   };
@@ -1372,7 +1418,6 @@ runsRouter.get('/:runId/operations', (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
     const operations = loadOperations();
-    const all = loadTemplates();
 
     res.json({
       // Same order Watch's stage tabs use — see `operationOrder`. Review's selector is a sequence,
@@ -1384,8 +1429,8 @@ runsRouter.get('/:runId/operations', (req, res, next) => {
         // A shared operation is reported as a single row, since it produces one file for the
         // whole run rather than one per family.
         const rows = shared
-          ? [buildRow(SHARED_FAMILY, 'Any family', id, all, run)]
-          : run.groups.map((group) => buildRow(group.family, group.familyLabel, id, all, run));
+          ? [buildRow(SHARED_FAMILY, 'Any family', id, run)]
+          : run.groups.map((group) => buildRow(group.family, group.familyLabel, id, run));
 
         const movement = operationMovement(id);
         const role = operationRole(id);

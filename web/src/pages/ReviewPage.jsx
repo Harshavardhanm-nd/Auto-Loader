@@ -9,6 +9,16 @@ import { Badge, Callout, Explainer, PageHead, Segmented, Sheet } from '../compon
  * destination mailbox is the loudest thing on this screen because it is the only thing that
  * tells the parser which operation a file represents.
  */
+/**
+ * Did this send fail because the guard refused it, rather than because sending broke?
+ *
+ * The distinction decides the advice given: a guard refusal means the mail probably already went
+ * out, so retrying is the dangerous option, not the safe one.
+ */
+function alreadySentRefusal(message = '') {
+  return /already sent for this operation|already in flight/i.test(message);
+}
+
 export default function ReviewPage({
   runId,
   run,
@@ -60,19 +70,40 @@ export default function ReviewPage({
 
   React.useEffect(loadOperations, [loadOperations, run?.artifacts, run?.sends]);
 
-  const loadValidation = React.useCallback(async () => {
-    setBusy('validate');
-    try {
-      setValidation(await api.validate(runId, activeOperation));
-    } catch (err) {
-      onError(err);
-    } finally {
-      setBusy(null);
-    }
-  }, [runId, activeOperation, onError]);
+  // `busy` is one slot shared by generate, validate, send and confirm. Clearing it
+  // unconditionally lets whichever call finishes first retire a token it does not own — which is
+  // how the automatic re-validation after each send wiped `send:<family>` and dropped the card
+  // back to its idle "Compose in Outlook" label while the email was still being driven through
+  // Outlook. Only the owner may clear it.
+  const clearBusy = React.useCallback((token) => {
+    setBusy((current) => (current === token ? null : current));
+  }, []);
+
+  /**
+   * The pre-send checks run two ways, and only one of them is a foreground action.
+   *
+   * `foreground: true` is the "Re-run checks" button, which claims `busy` so it can show its own
+   * progress. The effect below passes `false`: it fires on every run refresh — including the one
+   * each send performs on its way out — and `GET /validate` is two Salesforce round trips (a
+   * collision check and a device-stage read), so claiming the shared slot there held it for
+   * seconds and then released it on top of a send that was still in flight.
+   */
+  const loadValidation = React.useCallback(
+    async ({ foreground = false } = {}) => {
+      if (foreground) setBusy('validate');
+      try {
+        setValidation(await api.validate(runId, activeOperation));
+      } catch (err) {
+        onError(err);
+      } finally {
+        if (foreground) clearBusy('validate');
+      }
+    },
+    [runId, activeOperation, onError, clearBusy]
+  );
 
   React.useEffect(() => {
-    if (run?.artifacts && Object.keys(run.artifacts).length) loadValidation();
+    if (run?.artifacts && Object.keys(run.artifacts).length) loadValidation({ foreground: false });
   }, [loadValidation, run?.artifacts]);
 
   React.useEffect(() => {
@@ -114,11 +145,21 @@ export default function ReviewPage({
     } catch (err) {
       onError(err);
     } finally {
-      setBusy(null);
+      clearBusy('generate');
     }
   };
 
+  // A synchronous in-flight latch. `busy` cannot do this job: it is React state, so it is only
+  // visible to the "Send all" effect on the *next* render, and the effect can fire again before
+  // that lands — which is how one "Send all" put six haptic and six VBUS emails into the org on
+  // 2026-09-03. A ref updates immediately, so the second call returns before it can reach the
+  // network. The server holds the real guarantee (`claimSend`); this keeps the sequence orderly
+  // and stops the UI recording phantom failures for sends it fired itself.
+  const sendInFlight = React.useRef(false);
+
   const send = async (family, { force = false, autoSend, partOfSendAll = false } = {}) => {
+    if (sendInFlight.current) return;
+    sendInFlight.current = true;
     setBusy(`send:${family}`);
     setNotice(null);
     try {
@@ -150,7 +191,8 @@ export default function ReviewPage({
       }
       onError(err);
     } finally {
-      setBusy(null);
+      sendInFlight.current = false;
+      clearBusy(`send:${family}`);
     }
   };
 
@@ -176,7 +218,7 @@ export default function ReviewPage({
     } catch (err) {
       onError(err);
     } finally {
-      setBusy(null);
+      clearBusy(`confirm:${family}`);
     }
   };
 
@@ -243,11 +285,13 @@ export default function ReviewPage({
             >
               {busy === 'generate' ? 'Generating…' : filesForOperation.length ? 'Re-generate' : 'Generate files'}
             </button>
+            {/* Any foreground action owns `busy`, so re-running the checks while one is
+                in flight would claim the slot and blank the sending card's "Working…" label. */}
             {filesForOperation.length ? (
               <button
                 className="btn quiet small"
-                disabled={busy === 'validate' || sendAllActive}
-                onClick={loadValidation}
+                disabled={Boolean(busy) || sendAllActive}
+                onClick={() => loadValidation({ foreground: true })}
               >
                 {busy === 'validate' ? 'Checking…' : 'Re-run checks'}
               </button>
@@ -351,16 +395,36 @@ export default function ReviewPage({
       </Sheet>
 
       {!sendAllActive && sendAllFailed.length ? (
-        <Callout tone="warn" title={`Send all: ${sendAllFailed.length} of ${sendAllTotal} skipped after failing`}>
-          {sendAllFailed.map((f) => (
-            <div key={f.family} style={{ marginBottom: '0.4rem' }}>
+        <Callout tone="warn" title={`Send all: ${sendAllFailed.length} of ${sendAllTotal} did not complete`}>
+          {sendAllFailed.map((f, i) => (
+            <div key={`${f.family}-${i}`} style={{ marginBottom: '0.4rem' }}>
               <strong style={{ display: 'inline' }}>{f.family}</strong> — {f.message}
             </div>
           ))}
-          <p className="prose small" style={{ marginTop: '0.4rem' }}>
-            These were not sent. Retry each one individually below once the underlying issue is
-            fixed.
-          </p>
+
+          {/*
+            A refusal by the duplicate guard is not the same as a send that failed, and the two
+            need opposite advice. The guard only fires when a send for that file is already
+            recorded or still running — meaning the email has most likely gone out. "These were
+            not sent, retry each one" was blanket advice that, on exactly these refusals, walks
+            the operator into loading the same devices twice.
+          */}
+          {sendAllFailed.some((f) => alreadySentRefusal(f.message)) ? (
+            <p className="prose small" style={{ marginTop: '0.4rem' }}>
+              <strong style={{ display: 'inline' }}>Do not re-send the ones refused as already
+              sent or already in flight.</strong>{' '}
+              That message means a send for the file was already recorded or still running, so
+              the email has most likely gone out. Check Sent Items and the Watch page first —
+              forcing one of these loads the same devices a second time.
+            </p>
+          ) : null}
+
+          {sendAllFailed.some((f) => !alreadySentRefusal(f.message)) ? (
+            <p className="prose small" style={{ marginTop: '0.4rem' }}>
+              The rest did not send. Retry those individually below once the underlying issue is
+              fixed.
+            </p>
+          ) : null}
         </Callout>
       ) : null}
 
@@ -419,7 +483,7 @@ export default function ReviewPage({
                 } catch (err) {
                   onError(err);
                 } finally {
-                  setBusy(null);
+                  clearBusy('discard');
                 }
               }}
             >
@@ -454,6 +518,7 @@ export default function ReviewPage({
               artifact={artifact}
               preview={previews[key]}
               alreadySent={run.sends?.[key]}
+              sendCount={familyInfo?.sendCount ?? 0}
               to={familyInfo?.to}
               blockers={familyInfo?.blockers ?? []}
               canSend={validation?.canSend && !busy && !sendAllActive && (familyInfo?.blockers?.length ?? 0) === 0}
@@ -512,6 +577,7 @@ function FileCard({
   artifact,
   preview,
   alreadySent,
+  sendCount = 0,
   to,
   blockers = [],
   canSend,
@@ -557,6 +623,13 @@ function FileCard({
                     ✓ Sent
                   </button>
                   <Badge tone="ok">{new Date(alreadySent.sentAt).toLocaleTimeString()}</Badge>
+                  {/* More than one email for one pipeline means the same devices were loaded
+                      more than once. The run only keeps the newest record in `sends`, so without
+                      this the repeats are invisible outside the event log — which is exactly how
+                      31 emails passed for 10 on 2026-09-03. */}
+                  {sendCount > 1 ? (
+                    <Badge tone="fail">sent {sendCount}× — duplicate load</Badge>
+                  ) : null}
                   {/* A re-send composes a second message for a file already sent once, so this
                       button carries the same lifecycle as the first-time one. */}
                   <button

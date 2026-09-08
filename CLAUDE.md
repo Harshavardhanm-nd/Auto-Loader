@@ -34,7 +34,7 @@ disabling that reasoning for `shipmentUpdate` and `received`. **Fixed 2026-08-15
 `dataUpdate` into `stageSteps` and adding `pollingOrder()` — see "The device life cycle lives in
 `config/lifecycle.json`" below for where the model lives now.
 
-The counts in this file (19 descriptors, 26 transitions, 317 tests in 16 files) are what the repo
+The counts in this file (19 descriptors, 26 transitions, 375 tests in 22 files) are what the repo
 actually holds; `templates/README.md` still describes 13 templates and is not reliable on numbers.
 
 ## Commands
@@ -43,7 +43,7 @@ actually holds; `templates/README.md` still describes 13 templates and is not re
 npm install                  # deps + the Chromium that drives the Salesforce/Outlook logins
 npm run dev                  # server :4317 (node --watch) + Vite UI :5317 (proxies /api), opens browser
 npm run dev:server           # server only
-npm test                     # 317 tests in 16 files — see "Test state" below, 27 currently fail
+npm test                     # 375 tests in 22 files — see "Test state" below, 27 currently fail
 npm run build && npm start   # single-process production mode on :4317 (Express serves dist/)
 ```
 
@@ -60,6 +60,12 @@ node --test server/services/catalog-query.test.js     # 18 tests, 18 pass / 0 fa
 node --test server/services/pricebook-query.test.js   # 6 tests, 6 pass / 0 fail — membership SOQL, Salesforce-id validation
 node --test server/services/product-description.test.js # 12 tests, 12 pass / 0 fail — the picker's one-line 'what is this'
 node --test server/services/collision-fields.test.js  # 8 tests, 8 pass / 0 fail — every minted series has a mapped collision field
+node --test server/services/series-width.test.js   # 15 tests, 15 pass / 0 fail — every descriptor accepts its own sampleStart
+node --test server/lib/derived-template.test.js    # 10 tests, 10 pass / 0 fail — dataUpdate borrowed from initialLoad, no filename collision
+node --test server/services/device-families.test.js # 7 tests, 7 pass / 0 fail — device id → family, row stamping
+node --test web/src/lib/handoff.test.js            # 9 tests, 9 pass / 0 fail — per-device hand-off buckets
+node --test server/services/send-claim.test.js     # 8 tests, 8 pass / 0 fail — one send in flight per pipeline
+node --test server/services/send-history.test.js   # 9 tests, 9 pass / 0 fail — no send record is overwritten away
 node --test server/services/collision-query.test.js   # 12 tests, 12 pass / 0 fail — one field per query, chunk size, URL budget
 node --test server/services/outlook-compose.test.js    # 5 tests, 5 pass / 0 fail — compose-open retry: use / retry / ambiguous
 node --test server/services/position.test.js          # 9 tests, 9 pass / 0 fail — ahead/behind/at against pollingOrder
@@ -70,14 +76,18 @@ node --test --test-name-pattern "byte contract" server/services/templates.test.j
 ```
 
 Node's runner prints its tallies with an `ℹ` prefix (`ℹ tests 69`), not TAP `#`, so grep for `ℹ`.
+`npm test` globs `server/**` **and** `web/src/**`: the Watch page's hand-off rule is pure logic in
+`web/src/lib/handoff.js` precisely so it can be tested without a browser.
 
 ### Test state — 27 failures are pre-existing, not yours
 
-**Two of the sixteen test files currently fail: `config.test.js` and `templates.test.js`.**
+**Two of the twenty-two test files currently fail: `config.test.js` and `templates.test.js`.**
 `lifecycle.test.js`, `stage-steps.test.js`, `stage-steps-shape.test.js`, `catalog-filter.test.js`,
 `catalog-query.test.js`, `pricebook-query.test.js`, `product-description.test.js`,
-`collision-fields.test.js`,
-`collision-query.test.js`, `position.test.js`, `poller-result.test.js`, `dead-device-type.test.js`
+`collision-fields.test.js`, `series-width.test.js`, `send-claim.test.js`,
+`send-history.test.js`,
+`collision-query.test.js`, `position.test.js`, `poller-result.test.js`, `dead-device-type.test.js`,
+`derived-template.test.js`, `device-families.test.js`, `handoff.test.js`
 and `outlook-compose.test.js` are green. The suite was last green as a whole at
 `e5c790d`; the five merges after it (`b78af52`…`20912a9`, the Octo/RMA/DEAD work) broke it and the
 tests were not updated. `lifecycle.test.js`'s 6 failures were the one exception: they were reporting
@@ -337,32 +347,31 @@ operation on the same devices — a shipment update that invented fresh ids woul
 `POST /:id/generate` accepts an optional `deviceIds` array, and every row planner honours it —
 generated rows are filtered on their primary series, existing-device rows on the id itself. The
 Watch page is what produces those subsets: it polls a stage, then offers the *next* operation over
-exactly the rows that settled. The eligibility filters live in `WatchPage.jsx` around `eligibleRows` (~330-395):
+exactly the rows that settled. The eligibility filters live in `WatchPage.jsx` around `advanceEligibleRows`; which operation each
+eligible row may be handed *to* is decided per device by `partitionHandoff` (`web/src/lib/handoff.js`):
 
 ```
-initialLoad polled    → IDMS -2 + INITIAL_DEVICE_LOAD_SYNC_SUCCESS or DATA_UPDATE_SYNC_SUCCESS,
-                         every accessory synced → offer shipmentUpdate, or the family's owed
-                                                   step first (Octo → dataUpdate)
-dataUpdate polled      → IDMS -2 + DATA_UPDATE_SYNC_SUCCESS (if owed) or either status (if not),
-                         every accessory synced → offer shipmentUpdate
+initialLoad or dataUpdate polled → IDMS -2 + INITIAL_DEVICE_LOAD_SYNC_SUCCESS or
+                                    DATA_UPDATE_SYNC_SUCCESS, every accessory synced
+                                    → every such device may take dataUpdate
+                                    → those not still owing a step may take shipmentUpdate
 shipmentUpdate polled  → IDMS -1 + SHIPMENT_UPDATE_SYNC_SUCCESS               → offer received at 3PL
 rmaReturned polled     → IDMS 7                                               → offer Mark Dead
 ```
 
-Note the first two lines: since `73fe338` a device may reach shipment-update eligibility from
-*either* initial load or data update — the point of the Octo detour, since Octo needs the data
-correction before shipping and other families skip it. Requiring the device to specifically carry
-`DATA_UPDATE_SYNC_SUCCESS`, rather than either status, is scoped to `stage === 'dataUpdate'` alone
-(`WatchPage.jsx:349`). Applying it on the initial-load tab too — which is what the plan first
-specified — leaves an Octo run with zero eligible rows there: those devices carry
-`INITIAL_DEVICE_LOAD_SYNC_SUCCESS`, not the data-update status, and `eligibleRows` gates the
-selection checkboxes, so no eligible rows means no way to select anything and no hand-off at all.
-The initial-load tab reroutes instead: `getNextOperation` sends an Octo selection to `dataUpdate`,
-not `shipmentUpdate`, because the family owes that step first — see the life cycle section below.
-A device that has actually reached `DATA_UPDATE_SYNC_SUCCESS` never forces the question on the
-initial-load tab anyway — it is already `aheadOfStage` relative to `initialLoad` and split out of
-that tab's snapshot before `eligibleRows` runs. `eligibleRows` picks the first non-empty of the
-three lists, so only one hand-off is ever offered at a time.
+A device may reach shipment-update eligibility from *either* initial load or data update (since
+`73fe338`) — the point of the Octo detour, since Octo needs the data correction before shipping and
+other families skip it. **The two tabs share one eligibility rule now**; what used to be a
+`stage === 'dataUpdate'` special case is subsumed by the per-device check, because an Octo device
+carrying only `INITIAL_DEVICE_LOAD_SYNC_SUCCESS` still owes its step wherever it is looked at, and
+one that has reached `DATA_UPDATE_SYNC_SUCCESS` does not. That device never appears on the
+initial-load tab anyway — it is `aheadOfStage` there and split out of the snapshot before
+eligibility runs.
+
+**Both hand-offs are offered at once when both apply.** `eligibleRows` still gates the selection
+checkboxes and still picks the first non-empty of the stage-specific lists, but the advance stages
+now render one button per non-empty bucket rather than a single next step, so a mixed selection is
+not forced down one family's path.
 
 This is why a partially-failed load is not a dead end: the ~⅓ that fail stay behind while the rest
 move on, on the same ids. Generating for a subset must never re-allocate — it filters rows that
@@ -483,6 +492,34 @@ for a shared operation across a mixed run the route passes the **first group's**
 `data/output/<runId>/`, so this does not collide *across* runs — but within one run two Dead files
 for different device subsets share a name, and the invariant below ("a new descriptor whose pattern
 collides with an existing one will silently overwrite") applies directly.
+
+**A data update borrows the family's own initial-load format.** Added 2026-09-03.
+`FORMAT_BORROWED_FROM` (`lib/config.js`) declares `dataUpdate: 'initialLoad'`, and
+`findTemplate(family, 'dataUpdate')` falls back — after the exact match, before the shared one — to
+a copy of that family's initial-load descriptor with the operation, id, label and filename
+rewritten, plus `derivedFrom` naming where the format came from. The evidence, not an assumption:
+`octo-data-update.json` is byte-identical to `octo-initial-load.json` apart from exactly those
+fields, and the two operations already share one mailbox in both environments — which is what tells
+the parser a file is a data update, the device already existing being the rest of it.
+
+Four descriptors are therefore *not* in `templates/` and never need to be: `driveri`, `dhub`, `dms`
+and `vbus` data updates. One format per family is the point — a correction to a family's
+initial-load columns reaches its data update for free, where four copies would drift.
+
+**The filename rewrite is load-critical, not cosmetic.** Artifacts are written to
+`data/output/<runId>/` under their own filename with no key prefix, so a derived data update
+keeping `Initial_Load_Driveri_{trackingId}.csv` would overwrite the run's real initial-load CSV.
+Only the leading operation segment is replaced, so the family segment keeps the casing its own
+descriptor declares — `Data_Update_DHUB_…`, not a re-derived `Dhub`.
+`server/lib/derived-template.test.js` pins both properties for every family.
+
+`status` is inherited (`verified`). The bytes were byte-checked against a real accepted sheet, and
+Octo and Haptic already demonstrate the org takes that same sheet as a data update.
+
+**Resolve through `findTemplate`/`findTemplateOrNull`, never by scanning `loadTemplates()`.** A
+derived template does not exist as a file, so a caller listing from the raw descriptors reports it
+as unsupported. `buildRow` did exactly that, which would have shown Review an operation the Watch
+page had just written a file for as having no format.
 
 `status: "awaiting-template"` means the server refuses to generate or send it. No descriptor
 currently carries it — all 19 say `verified` — but the mechanism is live in `isTemplateUsable`.
@@ -746,17 +783,34 @@ step is *required*: `requiredStepsBefore(operation, family)` reads `requiredFor`
 data update before shipment update. **The check is per group, not per run** — `groups.every(g =>
 g.family === 'octo')` read a mixed run as non-Octo and skipped the block for its Octo devices.
 
-Only `haptic` and `octo` have a data-update sheet, so it is required for Octo, optional for Haptic,
-and impossible for the rest.
+Only `haptic` and `octo` declare a data-update sheet, but **every family can now take one** — see
+"A data update borrows the family's own initial-load format" above. So a data update is required
+for Octo and optional for everybody else; no family is refused it.
 
-**That per-group fix does not reach every Octo check, and the gap is a limit, not a feature.**
-Whether to withhold "Received at 3PL" once a shipment update lands is a separate decision, in
-`WatchPage.jsx`'s `handoff`, and it still reads `runFamilies.includes('octo')` — the run's families,
-not each device's own. A run holding both Octo and non-Octo groups therefore withholds that
-hand-off from every device in it, where only the Octo ones should actually carry on past shipment
-update. Scoping it per device needs a browser-side device-id → family map, which this change does
-not build. Withholding is the safer half of that gap: a send not offered is a click away, a send
-offered wrongly is an email that has already gone.
+**The hand-off is scoped per device, not per run. Fixed 2026-09-03.** Every remaining run-level
+family check is gone: `runFamilies` and `stepRequiredBefore` are deleted from `WatchPage.jsx`, and
+`GET /:runId/lifecycle` withholds a step's successor only when **every** group in the run owes it.
+
+A poll snapshot row now carries `family`, stamped at read time by `GET /:runId/poll/:stage` from
+`deviceFamilyMap(run)` (`services/device-families.js`) — the same walk `runDeviceIds` and the Dead
+sheet already did, now in one place. Stamped at read time and before `scopeSnapshot`, for the two
+reasons the accessory decoration is: a snapshot written before the field existed would otherwise
+never gain it, and `rescoreSnapshot`/`splitByStagePosition` spread rows rather than rebuild them, so
+the field survives the `atStage`/`movedOn`/`notYet` split for free.
+
+`partitionHandoff(rows, stepModel)` (`web/src/lib/handoff.js`, pure, 9 tests) splits the eligible
+rows into two buckets, and **a device can be in both**: `dataUpdate` holds every eligible device,
+`shipmentUpdate` holds every device that does not *still* owe a step. "Still" is measured on the
+device's own `Sync_Status__c`, never on whether an email went out — a send the integration has not
+acted on has changed nothing in the org. A device whose family is unknown owes nothing, the same
+rule `positionInChain` follows for a status it cannot place.
+
+Watch renders one button per non-empty bucket, each generating for **only the ids it names**, so a
+mixed selection can no longer send a family to an operation it has no sheet for. Before this, one
+Octo group routed a run's whole selection to `dataUpdate`: the Octo file was written, every other
+family came back in `blocked`, and those devices sat at Pre-Production with no offered way forward
+— the only route past it was Review's operation selector, which generates for the whole run and
+drops the device subset entirely.
 
 **An Octo device is held back until its related assets are synced** — every entry in
 `row.accessories` present and at a `_SYNC_SUCCESS`. Per device, not per run: the batch's successes
@@ -820,6 +874,7 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
 | `services/session-audit.js` | boot-time liveness check of every stored Salesforce + Outlook session |
 | `services/sf-client.js` | every SOQL read; `classifySyncStatus`; `summarisePolling` |
 | `services/accessory-enrichment.js` | Octo accessory fetch + decoration, shared by `poll/:stage` and `lifecycle` |
+| `services/device-families.js` | device id → family for a run; stamps `family` onto snapshot rows |
 | `services/id-generator.js` | series allocation against persisted counters, `setCursor`/`resetCursor` |
 | `services/sku-decoder.js` | positional SKU decoding — no quantity ever comes out of this |
 | `services/csv-builder.js` | descriptor-driven generation, four row planners |
@@ -907,9 +962,34 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
   legitimately contains them, so it's caller data corruption.
 - **Mailbox matching is on the local part**, not the domain. Every testing address is
   `@netradyne.com` and staging's are all Apex email services on one host suffix.
+- **One send in flight per `"<operation>:<family>"`, enforced by a claim, not by a check.**
+  `claimSend`/`releaseSend` (`run-store.js`) take exclusive hold of the pipeline *before*
+  `deliver()`; the route releases in a `finally`, and a claim abandoned by a crash expires after
+  `SEND_CLAIM_TTL_MS` (10 min). The duplicate-send guard below **cannot** do this job on its own:
+  it reads `run.sends[key]`, then the handler awaits `deliver()` for seconds, then writes the
+  record, so every request arriving inside that window reads "not sent yet" and sends. On
+  2026-09-03 one "Send all" put **31 emails into testing for 10 intended sends** —
+  `shipmentUpdate/haptic` and `shipmentUpdate/vbus` six times each, six deliveries inside 400 ms —
+  and then reported three files as *failed to send*, because the only requests that reached the
+  guard were the last to arrive, after a record finally existed. `force` overrides the duplicate
+  guard but **never** the claim: two concurrent forced sends are still two loads. `updateRun` is a
+  synchronous read-modify-write, which is the whole reason the check-and-set is safe — keep it
+  free of `await`.
 - **A send is only recorded after the message is found in Sent Items.** Compose-and-stop
   (`awaitingYourSend`) is explicitly *not* a send — recording it would arm the duplicate-send guard
   against the real send that hasn't happened. `mail.autoSend` is `false` by default.
+- **A send record is never overwritten out of existence.** `run.sends[key]` stays a single
+  object — the duplicate guard, the Watch tabs, the History page and `summariseRun` all read that
+  shape — and holds the *latest* send. Every record it replaces is appended to
+  `run.sendHistory[key]` by `archiveCurrentSend`, oldest first; `sendsForKey(run, key)` reads the
+  two back as one list, and its `.length` is the `sendCount` the Review card shows as
+  `sent N× — duplicate load`. Before this, a forced re-send or a confirmed re-compose simply
+  overwrote the record: after the 2026-09-03 burst put 31 emails out for 10 intended sends, the
+  run showed exactly **one** send per pipeline and six real loads survived only in the event log.
+  A send record is the structured evidence that devices reached the org, so losing one loses the
+  only account of a load that actually happened. Regeneration for a different device set archives
+  through the same helper — there is one implementation, and `fallbackDeviceIds` exists because a
+  record archived without its devices makes the guard refuse every later send for that key.
 - **A device may not be loaded twice for the same operation** — that, not key reuse, is what the
   duplicate guard exists for. `duplicateSendReason` compares the file's `deviceIds` against every
   send for that `"<operation>:<family>"`, current and superseded. Half a batch pushed to shipment

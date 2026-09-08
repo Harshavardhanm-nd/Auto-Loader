@@ -77,6 +77,20 @@ is indistinguishable from a file that has already been accepted.
   `digits` width rather than being capped there (Haptic's `serial_number` does this — its
   accessory serials are not fixed at 6 digits). `digits` still sets the *minimum* width and the
   URL-budget estimate in `collisionChunkSize`; only the overflow refusal is lifted.
+
+  **`unbounded` is not the flag that relaxes validation — `anyLength` is, and reaching for the
+  wrong one tightens the rule instead.** `unbounded` lifts the *ceiling* (`numericCeiling` →
+  Infinity), while `"anyLength": true` drops the width check in `validateRows` entirely, accepting
+  any all-digit value. Set together with a raised `digits`, `unbounded` turns `^\d{N}$` into
+  `^\d{N,}$` — a *floor*, stricter than the exact width it replaced. That is what blocked every
+  VBUS send on 2026-09-03: `serial_number` went to `digits: 11` + `unbounded` in a commit whose
+  message said it was removing digit validation, and VBUS serials are ten digits, so every row
+  failed as a blocker. Both VBUS series now carry `anyLength`.
+
+  A descriptor must always accept its own `sampleStart` — that value came off a sheet the parser
+  accepted, so it is the one id per series known to be loadable. `server/services/series-width.test.js`
+  walks every descriptor and fails if one rejects it, which is the cheapest possible guard on this
+  whole class of mistake.
 - `prefixed` — `prefix` plus a decimal counter. Used for Octo's `wifi_mac` / `bt_mac`, which
   look like MAC addresses but are a fixed prefix plus a counter (`…05:c7`, `…05:c8`, …
   `…05:c16`) rather than hex arithmetic. Not collision-checked, since these are not asset

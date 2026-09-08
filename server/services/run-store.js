@@ -128,6 +128,88 @@ export function updateRun(runId, mutate) {
   return next;
 }
 
+/**
+ * How long a send claim is honoured before it is treated as abandoned.
+ *
+ * Only reached if the process died mid-send, since the handler releases in a `finally`. Long
+ * enough to cover a slow Outlook compose plus its Sent Items confirmation (the compose panel
+ * alone has been measured at 32s), short enough that a crash does not wedge a pipeline for the
+ * rest of the day.
+ */
+/**
+ * Move the current send record for a pipeline into its history, so an overwrite never destroys it.
+ *
+ * `run.sends[key]` is a single object and stays that way — the duplicate guard, the Watch tabs,
+ * the History page and `summariseRun` all read that shape. The full record lives in
+ * `run.sendHistory[key]`, oldest first, and `sendsForKey` reads the two back as one list.
+ *
+ * A send record is the structured evidence that devices reached the org. When 31 emails went out
+ * for 10 intended sends on 2026-09-03, each delivery overwrote the last, and the run afterwards
+ * showed one send per pipeline; six real loads of the same devices survived only in the event log.
+ *
+ * `fallbackDeviceIds` matters more than it looks: a record archived without its devices is one the
+ * guard can never reason about again, so it refuses every later send for that key on principle —
+ * including the legitimate other half of a batch.
+ *
+ * @returns {boolean} whether there was a record to archive
+ */
+export function archiveCurrentSend(run, key, { fallbackDeviceIds } = {}) {
+  const previous = run.sends?.[key];
+  if (!previous) return false;
+  run.sendHistory = run.sendHistory ?? {};
+  run.sendHistory[key] = [
+    ...(run.sendHistory[key] ?? []),
+    { ...previous, deviceIds: previous.deviceIds ?? fallbackDeviceIds ?? [] },
+  ];
+  return true;
+}
+
+/** Every send for one pipeline, oldest first: the archived ones, then the current. */
+export function sendsForKey(run, key) {
+  const current = run?.sends?.[key];
+  return [...(run?.sendHistory?.[key] ?? []), ...(current ? [current] : [])];
+}
+
+export const SEND_CLAIM_TTL_MS = 10 * 60_000;
+
+/**
+ * Take exclusive hold of one `"<operation>:<family>"` pipeline for the duration of a send.
+ *
+ * This is what actually prevents a double load; the duplicate-send guard alone cannot. That
+ * guard reads `run.sends[key]`, then the handler awaits `deliver()` for several seconds, then
+ * writes the record — so every request arriving inside that window reads the same "not sent
+ * yet" state and passes. A single "Send all" on 2026-09-03 put 31 emails into the org for 10
+ * intended sends that way.
+ *
+ * `updateRun` is a synchronous read-modify-write, so the check and the set here cannot be
+ * interleaved by another request on Node's single thread. Returns false if the pipeline is
+ * already held, in which case the caller must not send.
+ */
+export function claimSend(runId, key, { ttlMs = SEND_CLAIM_TTL_MS, now = Date.now() } = {}) {
+  let claimed = false;
+  updateRun(runId, (run) => {
+    run.sending = run.sending ?? {};
+    const held = run.sending[key];
+    const startedAt = held ? Date.parse(held.startedAt) : NaN;
+    // An unparseable timestamp counts as stale rather than holding the pipeline forever.
+    const stillHeld = Number.isFinite(startedAt) && now - startedAt < ttlMs;
+    if (!stillHeld) {
+      run.sending[key] = { startedAt: new Date(now).toISOString() };
+      claimed = true;
+    }
+    return run;
+  });
+  return claimed;
+}
+
+/** Release a pipeline claimed by `claimSend`. Safe to call for a key that is not held. */
+export function releaseSend(runId, key) {
+  updateRun(runId, (run) => {
+    if (run.sending) delete run.sending[key];
+    return run;
+  });
+}
+
 export function appendEvent(runId, event, detail = null) {
   return updateRun(runId, (run) => {
     run.events.push({ at: new Date().toISOString(), event, detail });
@@ -173,7 +255,15 @@ export function summariseRun(run) {
     })),
     sends: Object.entries(run.sends ?? {})
       .filter(([, s]) => s?.ok)
-      .map(([key, s]) => ({ key, operation: s.operation, family: s.family, to: s.to, sentAt: s.sentAt })),
+      .map(([key, s]) => ({
+        key,
+        operation: s.operation,
+        family: s.family,
+        to: s.to,
+        sentAt: s.sentAt,
+        // Emails this pipeline actually produced. >1 means the same devices were loaded twice.
+        attempts: sendsForKey(run, key).filter((x) => x?.ok).length,
+      })),
     loadedDeviceIds: run.result?.loadedDeviceIds ?? [],
     failedDeviceIds: run.result?.failedDeviceIds ?? [],
   };
@@ -226,18 +316,9 @@ export function saveArtifact(runId, key, artifact) {
     // full history to still catch a genuine repeat.
     const previousSend = run.sends?.[key];
     if (previousSend?.ok && !sameDeviceSet(previousSend.deviceIds, artifact.deviceIds)) {
-      run.sendHistory = run.sendHistory ?? {};
-      run.sendHistory[key] = [
-        ...(run.sendHistory[key] ?? []),
-        {
-          ...previousSend,
-          // Last chance to learn what that send carried: the artifact it went out with is still
-          // in the run, about to be overwritten on the next line. A send archived without its
-          // devices is one the guard can never reason about again, so it blocks every later
-          // send for this key on principle — including the legitimate other half of a batch.
-          deviceIds: previousSend.deviceIds ?? run.artifacts?.[key]?.deviceIds ?? [],
-        },
-      ];
+      // Last chance to learn what that send carried: the artifact it went out with is still in
+      // the run, about to be overwritten below.
+      archiveCurrentSend(run, key, { fallbackDeviceIds: run.artifacts?.[key]?.deviceIds });
       delete run.sends[key];
     }
 

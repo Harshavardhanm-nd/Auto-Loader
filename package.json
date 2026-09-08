@@ -1,5 +1,5 @@
 {
-  "name": "auto-loader",
+  "name": "asset-loader",
   "version": "1.0.0",
   "private": true,
   "description": "Local app for Netradyne device + accessory initial load and shipment update",
@@ -10,7 +10,7 @@
     "dev:web": "vite --config web/vite.config.js",
     "build": "vite build --config web/vite.config.js",
     "start": "NODE_ENV=production node server/index.js",
-    "test": "node --test \"server/**/*.test.js\"",
+    "test": "node --test \"server/**/*.test.js\" \"web/src/**/*.test.js\"",
     "postinstall": "playwright install chromium --with-deps || playwright install chromium || true"
   },
   "dependencies": {
