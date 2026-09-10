@@ -10,6 +10,32 @@ import { Badge, Callout, Explainer, PageHead, Sheet, Stat } from '../components/
  * persisted counter so each block is contiguous and auditable, and are still checked against
  * the org before anything is sent.
  */
+/** Gathers every series the operator switched to "one id per asset" into the shape
+ *  `POST /:id/allocate` expects: `{ [family]: { [seriesName]: string[] } }` — one value per
+ *  unit, in the same order the auto-generated block would have used. `manualIds[key]` already
+ *  holds nothing but committed values (one Add = one entry, always appended), so there is no
+ *  parsing to do here — just a count that must reach `total`. */
+function collectManualSeries(cursors, run, manualOn, manualIds) {
+  const manualSeries = {};
+  for (const c of cursors ?? []) {
+    const group = run.groups.find((g) => g.family === c.family);
+    if (!group) continue;
+    const total = group.lines.reduce((n, l) => n + l.deviceCount, 0);
+    for (const name of Object.keys(c.series)) {
+      const key = `${c.templateId}:${name}`;
+      if (!manualOn[key]) continue;
+      const values = manualIds[key] ?? [];
+      if (values.length !== total) {
+        throw new Error(
+          `${c.familyLabel} "${name}": ${values.length} of ${total} id(s) entered — add the rest before allocating.`
+        );
+      }
+      manualSeries[c.family] = { ...(manualSeries[c.family] ?? {}), [name]: values };
+    }
+  }
+  return manualSeries;
+}
+
 export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
   const [busy, setBusy] = React.useState(null);
   const [cursors, setCursors] = React.useState(null);
@@ -17,6 +43,25 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
   const [allocation, setAllocation] = React.useState(null);
   const [resetResult, setResetResult] = React.useState(null);
   const [setToInputs, setSetToInputs] = React.useState({});
+  // Manual per-asset ids: keyed the same way as setToInputs (`${templateId}:${seriesName}`).
+  // manualOn toggles a series into "operator supplies every value" mode. One box + Add handles
+  // any count without growing the page: manualIds[key] is the list already committed (kept in
+  // state so it can be sent to /allocate, but never rendered id-by-id — once allocation runs,
+  // the values show up in the generated-ids table below anyway, so redisplaying them here would
+  // just be the same list twice). manualDraft[key] is whatever is typed but not yet added.
+  const [manualOn, setManualOn] = React.useState({});
+  const [manualIds, setManualIds] = React.useState({});
+  const [manualDraft, setManualDraft] = React.useState({});
+
+  const addManualId = (key) => {
+    const value = (manualDraft[key] ?? '').trim();
+    if (!value) return;
+    setManualIds((prev) => ({ ...prev, [key]: [...(prev[key] ?? []), value] }));
+    setManualDraft((prev) => ({ ...prev, [key]: '' }));
+  };
+
+  const undoManualId = (key) =>
+    setManualIds((prev) => ({ ...prev, [key]: (prev[key] ?? []).slice(0, -1) }));
 
   React.useEffect(() => {
     if (runId) api.cursors(runId).then((d) => setCursors(d.cursors)).catch(() => setCursors(null));
@@ -47,7 +92,9 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
           <p>
             One contiguous block per series, from a persisted counter. Every numeric series is
             checked against <code>Asset.Name</code>; the prefixed pseudo-MACs are not, since they
-            are not asset names.
+            are not asset names. Switch a series to "one id per asset" below to type in every
+            value yourself instead — each is used exactly as entered and never advances that
+            series' counter.
           </p>
         </Explainer>
       </PageHead>
@@ -69,7 +116,12 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
             <button
               className="btn"
               disabled={busy === 'allocate'}
-              onClick={() => act(() => api.allocate(runId).then(setAllocation), 'allocate')}
+              onClick={() =>
+                act(() => {
+                  const manualSeries = collectManualSeries(cursors, run, manualOn, manualIds);
+                  return api.allocate(runId, manualSeries).then(setAllocation);
+                }, 'allocate')
+              }
             >
               {busy === 'allocate' ? 'Allocating…' : hasIds ? 'Re-allocate' : 'Allocate ids'}
             </button>
@@ -132,6 +184,20 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
         )
       ) : null}
 
+      {run.idGeneration?.allocations?.some((a) => a.manualCollisions?.length) ? (
+        <Callout tone="fail" title="A manually-set id already exists in the org">
+          These were typed in on this page, not minted from a counter, so allocation could not
+          step past them — re-check the value before generating or sending.
+          {run.idGeneration.allocations
+            .filter((a) => a.manualCollisions?.length)
+            .map((a) => (
+              <div key={a.family} className="mono small" style={{ marginTop: '0.45rem' }}>
+                {a.familyLabel}: {a.manualCollisions.join(', ')}
+              </div>
+            ))}
+        </Callout>
+      ) : null}
+
       {cursors?.length ? (
         <Sheet eyebrow="Persisted counters" title="Next value per series">
           <Explainer>
@@ -148,13 +214,16 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                   <th>Type</th>
                   <th>Next</th>
                   <th>Set to…</th>
+                  <th>Manual ids</th>
                 </tr>
               </thead>
               <tbody>
-                {cursors.flatMap((c) =>
-                  Object.entries(c.series).map(([name, info]) => {
+                {cursors.flatMap((c) => {
+                  const group = run.groups.find((g) => g.family === c.family);
+                  const total = group ? group.lines.reduce((n, l) => n + l.deviceCount, 0) : 0;
+                  return Object.entries(c.series).flatMap(([name, info]) => {
                     const key = `${c.templateId}:${name}`;
-                    return (
+                    const rows = [
                       <tr key={key}>
                         <td className="small">{c.familyLabel}</td>
                         <td className="mono small">{name}</td>
@@ -168,8 +237,9 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                             <span style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                               <input
                                 className="mono small"
-                                style={{ width: '11ch', padding: '2px 4px', fontSize: '0.8em' }}
+                                style={{ width: '15ch', padding: '2px 4px', fontSize: '0.8em' }}
                                 placeholder={info.next}
+                                disabled={manualOn[key]}
                                 value={setToInputs[key] ?? ''}
                                 onChange={(e) =>
                                   setSetToInputs((prev) => ({ ...prev, [key]: e.target.value }))
@@ -177,10 +247,10 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                               />
                               <button
                                 className="btn quiet small"
-                                disabled={!setToInputs[key] || busy === `set:${key}`}
+                                disabled={!setToInputs[key] || manualOn[key] || busy === `set:${key}`}
                                 onClick={() =>
                                   act(async () => {
-                                    await api.setCursor(runId, c.templateId, name, Number(setToInputs[key]));
+                                    await api.setCursor(runId, c.templateId, name, setToInputs[key].trim());
                                     setSetToInputs((prev) => ({ ...prev, [key]: '' }));
                                     setCursors((await api.cursors(runId)).cursors);
                                   }, `set:${key}`)
@@ -193,10 +263,79 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                             <span className="muted small">—</span>
                           )}
                         </td>
-                      </tr>
-                    );
-                  })
-                )}
+                        <td>
+                          {info.type === 'numeric' ? (
+                            <label className="small muted" style={{ display: 'flex', gap: '4px', alignItems: 'center', whiteSpace: 'nowrap' }}>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(manualOn[key])}
+                                onChange={(e) =>
+                                  setManualOn((prev) => ({ ...prev, [key]: e.target.checked }))
+                                }
+                              />
+                              One id per asset
+                            </label>
+                          ) : (
+                            <span className="muted small">—</span>
+                          )}
+                        </td>
+                      </tr>,
+                    ];
+                    if (manualOn[key]) {
+                      const values = manualIds[key] ?? [];
+                      const done = values.length >= total;
+                      rows.push(
+                        <tr key={`${key}:manual`}>
+                          <td colSpan={6}>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <input
+                                className="mono small"
+                                style={{ width: '18ch', padding: '2px 4px', fontSize: '0.8em' }}
+                                placeholder={done ? 'all entered' : `#${values.length + 1}`}
+                                disabled={done}
+                                value={manualDraft[key] ?? ''}
+                                onChange={(e) =>
+                                  setManualDraft((prev) => ({ ...prev, [key]: e.target.value }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    addManualId(key);
+                                  }
+                                }}
+                              />
+                              <button
+                                className="btn quiet small"
+                                disabled={done || !(manualDraft[key] ?? '').trim()}
+                                onClick={() => addManualId(key)}
+                              >
+                                Add
+                              </button>
+                              <button
+                                type="button"
+                                className="btn quiet small"
+                                disabled={values.length === 0}
+                                onClick={() => undoManualId(key)}
+                                title="Remove the last entry"
+                              >
+                                Undo last
+                              </button>
+                              <span className="small" style={{ color: done ? 'var(--muted)' : 'var(--warn)' }}>
+                                {values.length} of {total} entered
+                              </span>
+                            </div>
+                            <p className="muted small" style={{ margin: '0.3rem 0 0' }}>
+                              One <code>{name}</code> at a time, in unit order, used exactly as
+                              typed — never stored back to the counter. Once allocated they show
+                              up in the generated ids below, so nothing is listed twice here.
+                            </p>
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return rows;
+                  });
+                })}
               </tbody>
             </table>
           </div>
@@ -264,6 +403,13 @@ function GroupIds({ group, allocation, taken }) {
       {allocation?.collisions?.length ? (
         <p className="muted small">
           Skipped past {allocation.collisions.length} existing id(s); the block below is clean.
+        </p>
+      ) : null}
+
+      {allocation?.manualSeries?.length ? (
+        <p className="muted small">
+          {allocation.manualSeries.join(', ')} set manually, one value per asset — not from a
+          counter.
         </p>
       ) : null}
 

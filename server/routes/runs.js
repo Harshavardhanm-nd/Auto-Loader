@@ -321,14 +321,18 @@ runsRouter.post('/:runId/cursors/set', (req, res, next) => {
     const run = getRun(req.params.runId);
     const { templateId, seriesName, value } = req.body ?? {};
     if (!templateId || !seriesName || value == null) throw Object.assign(new Error('templateId, seriesName and value required'), { status: 400 });
-    const n = Number(value);
-    if (!Number.isFinite(n) || n < 0) throw Object.assign(new Error('value must be a non-negative number'), { status: 400 });
+    // BigInt, not Number: a sim serial (ICCID) runs to 20 digits, well past the 53 bits a
+    // Number can carry safely. Parsing it as a Number here rounds it before it ever reaches
+    // the counter, which is why a cursor set to a real 19-digit id came back truncated.
+    const raw = String(value).trim();
+    if (!/^\d+$/.test(raw)) throw Object.assign(new Error('value must be a non-negative whole number'), { status: 400 });
+    const n = BigInt(raw);
     const template = getTemplate(templateId);
     const def = template.series?.[seriesName];
     if (!def) throw Object.assign(new Error(`Unknown series "${seriesName}" on "${templateId}"`), { status: 400 });
-    if (def.digits && !def.unbounded && n > (10 ** def.digits - 1)) throw Object.assign(new Error(`Value exceeds ${def.digits}-digit limit`), { status: 400 });
+    if (def.digits && !def.unbounded && n > BigInt(10 ** def.digits - 1)) throw Object.assign(new Error(`Value exceeds ${def.digits}-digit limit`), { status: 400 });
     setCursor(run.env, templateId, seriesName, n);
-    res.json({ set: true, value: n });
+    res.json({ set: true, value: n.toString() });
   } catch (err) {
     next(err);
   }
@@ -365,6 +369,10 @@ runsRouter.post('/:runId/allocate', async (req, res, next) => {
     const run = getRun(req.params.runId);
     const connected = Boolean(readSession(run.env));
     const checkTaken = connected ? (ids) => findTakenDeviceIds(run.env, ids) : null;
+    // Per-family, per-series operator-supplied ids — one value per unit, in line order,
+    // covering the whole group the way a minted block does. A series absent here is minted
+    // as before; naming one here opts only that series out of the counter.
+    const manualSeries = req.body?.manualSeries ?? {};
 
     const allocations = [];
     const groups = [];
@@ -379,12 +387,32 @@ runsRouter.post('/:runId/allocate', async (req, res, next) => {
         continue;
       }
 
+      const groupManualValues = manualSeries[group.family] ?? {};
+      for (const [seriesName, values] of Object.entries(groupManualValues)) {
+        if (!template.series?.[seriesName]) {
+          throw Object.assign(
+            new Error(`"${group.family}" has no series "${seriesName}" to set ids for`),
+            { status: 400 }
+          );
+        }
+        if (!Array.isArray(values) || values.length !== total) {
+          throw Object.assign(
+            new Error(
+              `${group.familyLabel} "${seriesName}": expected ${total} manually-set id(s), got ` +
+                `${Array.isArray(values) ? values.length : 0}`
+            ),
+            { status: 400 }
+          );
+        }
+      }
+
       const allocation = await allocateSeries({
         env: run.env,
         templateId: group.templateId,
         series: template.series,
         count: total,
         checkTaken,
+        manualValues: groupManualValues,
       });
 
       // Hand each line its own contiguous slice, in line order.
@@ -403,6 +431,8 @@ runsRouter.post('/:runId/allocate', async (req, res, next) => {
         attempts: allocation.attempts,
         collisionCheckRan: allocation.checked,
         collisions: allocation.collisions,
+        manualCollisions: allocation.manualCollisions,
+        manualSeries: Object.keys(groupManualValues),
         ranges: allocation.ranges,
       });
     }

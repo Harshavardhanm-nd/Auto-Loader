@@ -82,8 +82,8 @@ export const api = {
   cursors: (runId) => get(`/api/runs/${runId}/cursors`),
   resetCursors: (runId, family) => post(`/api/runs/${runId}/cursors/reset`, { family }),
   setCursor: (runId, templateId, seriesName, value) =>
-    post(`/api/runs/${runId}/cursors/set`, { templateId, seriesName, value }),
-  allocate: (runId) => post(`/api/runs/${runId}/allocate`, {}),
+    post(`/api/runs/${runId}/cursors/set`, { templateId, seriesName, value: String(value) }),
+  allocate: (runId, manualSeries) => post(`/api/runs/${runId}/allocate`, { manualSeries }),
   checkIds: (runId) => post(`/api/runs/${runId}/check-ids`, {}),
 
   generate: (runId, operation, deviceIds) =>
