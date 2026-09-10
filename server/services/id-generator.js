@@ -25,6 +25,13 @@
  * And the cursor is persisted even when allocation ultimately fails, because the ground it
  * rejected is genuinely occupied. Discarding it made every retry re-walk the same collisions
  * and fail identically, forever.
+ *
+ * All cursor arithmetic is done in BigInt, never `Number`. A sim serial (ICCID) is up to 20
+ * digits and a plain `Number` only carries 53 bits (~16 safe decimal digits) — past that,
+ * consecutive integers stop being distinguishable at all, so incrementing "+1" silently
+ * produced the *same* rounded value for every row, and a value like `8901882024118888084`
+ * came back as `8901882024118888000`. Digit width is still whatever the descriptor declares;
+ * only the arithmetic that was silently lossy has changed.
  */
 
 import { COUNTERS_FILE, readJson, writeJson } from '../lib/paths.js';
@@ -32,6 +39,14 @@ import { COUNTERS_FILE, readJson, writeJson } from '../lib/paths.js';
 const MAX_ATTEMPTS = 8;
 /** Ids probed past the block itself, so one round trip can step over a batch loaded earlier. */
 const LOOKAHEAD = 250;
+
+/** Every cursor value is carried as BigInt from the moment it leaves storage or a descriptor. */
+function toBig(value) {
+  if (typeof value === 'bigint') return value;
+  const str = String(value).trim();
+  if (!/^\d+$/.test(str)) throw new Error(`"${value}" is not a whole number`);
+  return BigInt(str);
+}
 
 /**
  * A numeric series' width is fixed, so it can only hold so many more blocks — unless the
@@ -57,13 +72,15 @@ function counterKey(env, templateId, seriesName) {
  */
 export function peekCursor(env, templateId, seriesName, seriesDef) {
   const stored = loadCounters()[counterKey(env, templateId, seriesName)];
-  if (typeof stored === 'number') return stored;
-  return Number(seriesDef.sampleStart);
+  if (stored === undefined || stored === null) return toBig(seriesDef.sampleStart);
+  return toBig(stored);
 }
 
+/** Stored as a decimal string — `JSON.stringify` cannot carry a BigInt, and a string never
+ *  rounds no matter how many digits the id has. */
 export function setCursor(env, templateId, seriesName, value) {
   const counters = loadCounters();
-  counters[counterKey(env, templateId, seriesName)] = value;
+  counters[counterKey(env, templateId, seriesName)] = toBig(value).toString();
   counters.updatedAt = new Date().toISOString();
   writeJson(COUNTERS_FILE, counters);
 }
@@ -112,10 +129,19 @@ function isCheckable(seriesDef) {
  * @param {number}   options.count
  * @param {Function} [options.checkTaken] async (ids[]) => takenIds[]; omit to skip the
  *                   org collision check (offline generation)
+ * @param {object}   [options.manualValues] `{ [seriesName]: string[] }` — one value per row,
+ *                   in row order, supplied by the operator instead of minted from the
+ *                   persisted counter. A series named here is never read from or written back
+ *                   to `data/counters.json`: the operator picked every value, so there is no
+ *                   block to advance past. Collisions are still checked (one pass, not
+ *                   retried — there is nothing to step to) and reported separately, as
+ *                   `manualCollisions`, since — unlike the auto-allocated block — the org
+ *                   already holding one of these ids is not "handled", it is a fact the
+ *                   operator needs before sending.
  * @returns {Promise<{rows: object[], attempts: number, checked: boolean,
- *                    collisions: string[], ranges: object}>}
+ *                    collisions: string[], manualCollisions: string[], ranges: object}>}
  */
-export async function allocateSeries({ env, templateId, series, count, checkTaken = null }) {
+export async function allocateSeries({ env, templateId, series, count, checkTaken = null, manualValues = {} }) {
   const n = Number(count);
   if (!Number.isInteger(n) || n < 1) throw new Error('count must be a positive integer');
   if (n > 5000) throw new Error('count above 5000 — split this into multiple runs');
@@ -123,30 +149,42 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
   const names = Object.keys(series ?? {});
   if (names.length === 0) {
     // Templates that reuse a prior run's ids (received, wizard uploads) declare no series.
-    return { rows: Array.from({ length: n }, () => ({})), attempts: 0, checked: false, collisions: [], ranges: {} };
+    return { rows: Array.from({ length: n }, () => ({})), attempts: 0, checked: false, collisions: [], manualCollisions: [], ranges: {} };
+  }
+
+  validateManualValues(series, manualValues, n);
+  const manualNames = names.filter((name) => Array.isArray(manualValues[name]));
+  const autoNames = names.filter((name) => !manualNames.includes(name));
+
+  const manualCollisions = await checkManualCollisions(series, manualValues, manualNames, checkTaken);
+
+  if (autoNames.length === 0) {
+    // Every series on this template was supplied by hand — nothing to mint, nothing to persist.
+    const rows = buildRows(series, {}, n, manualValues);
+    return { rows, attempts: 0, checked: Boolean(checkTaken), collisions: [], manualCollisions, ranges: rangesFor(series, {}, n, manualValues) };
   }
 
   const starts = {};
-  for (const name of names) starts[name] = peekCursor(env, templateId, name, series[name]);
+  for (const name of autoNames) starts[name] = peekCursor(env, templateId, name, series[name]);
 
-  assertHeadroom(series, starts, n);
+  assertHeadroom(series, starts, n, autoNames);
 
   const allCollisions = [];
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (!checkTaken) {
-      const rows = buildRows(series, starts, n);
-      return finish({ env, templateId, series, starts, n, rows, attempts: attempt, checked: false, collisions: [] });
+      const rows = buildRows(series, starts, n, manualValues);
+      return finish({ env, templateId, series, starts, n, rows, autoNames, attempts: attempt, checked: false, collisions: [], manualValues, manualCollisions });
     }
 
     // Probe well past the block so a whole batch loaded earlier can be cleared in one query.
     const spans = {};
     const candidates = [];
-    for (const name of names) {
+    for (const name of autoNames) {
       if (!isCheckable(series[name])) continue;
       spans[name] = probeSpan(series[name], starts[name], n);
       for (let i = 0; i < spans[name]; i++) {
-        candidates.push(formatValue(series[name], starts[name] + i));
+        candidates.push(formatValue(series[name], starts[name] + BigInt(i)));
       }
     }
 
@@ -157,7 +195,7 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
     // Where does each series' first free run of n begin inside the span we just probed?
     const offsets = {};
     let allPlaced = true;
-    for (const name of names) {
+    for (const name of autoNames) {
       if (!isCheckable(series[name])) {
         offsets[name] = 0;
         continue;
@@ -171,25 +209,25 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
     }
 
     if (allPlaced) {
-      for (const name of names) starts[name] += offsets[name];
-      const rows = buildRows(series, starts, n);
+      for (const name of autoNames) starts[name] += BigInt(offsets[name]);
+      const rows = buildRows(series, starts, n, manualValues);
       return finish({
-        env, templateId, series, starts, n, rows,
-        attempts: attempt, checked: true, collisions: allCollisions,
+        env, templateId, series, starts, n, rows, autoNames,
+        attempts: attempt, checked: true, collisions: allCollisions, manualValues, manualCollisions,
       });
     }
 
     // The whole span is occupied — step every checkable series past it and look again.
-    for (const name of names) {
+    for (const name of autoNames) {
       if (!isCheckable(series[name])) continue;
-      starts[name] += spans[name];
+      starts[name] += BigInt(spans[name]);
     }
-    assertHeadroom(series, starts, n);
+    assertHeadroom(series, starts, n, autoNames);
   }
 
   // Persist the ground already rejected. It is genuinely occupied, so resuming past it is
   // correct and keeps the next attempt from re-walking exactly this search.
-  for (const name of names) setCursor(env, templateId, name, starts[name]);
+  for (const name of autoNames) setCursor(env, templateId, name, starts[name]);
 
   throw new Error(
     `Could not find ${n} free ids for "${templateId}" after ${MAX_ATTEMPTS} attempts ` +
@@ -199,12 +237,49 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
   );
 }
 
-/** A numeric series can only hold so many more ids; refuse before minting a narrow one. */
-function assertHeadroom(series, starts, n) {
-  for (const [name, def] of Object.entries(series)) {
-    if (def.type === 'numeric' && starts[name] + n - 1 > numericCeiling(def)) {
+/** Fail fast, before touching any counter, on a manual series with the wrong shape. */
+function validateManualValues(series, manualValues, n) {
+  for (const [name, values] of Object.entries(manualValues ?? {})) {
+    if (!values) continue;
+    if (!series[name]) throw new Error(`Unknown series "${name}" for manual ids`);
+    if (!Array.isArray(values) || values.length !== n) {
       throw new Error(
-        `Series "${name}" would overflow ${def.digits} digits at ${starts[name] + n - 1}. ` +
+        `Manual ids for "${name}" must supply exactly ${n} value(s), got ` +
+          `${Array.isArray(values) ? values.length : 0}`
+      );
+    }
+    const seen = new Set();
+    values.forEach((v, i) => {
+      const value = String(v ?? '').trim();
+      if (!value) throw new Error(`Manual ids for "${name}": row ${i + 1} is empty`);
+      if (seen.has(value)) throw new Error(`Manual ids for "${name}": duplicate value "${value}"`);
+      seen.add(value);
+    });
+  }
+}
+
+/** One-off org check for operator-supplied ids. Not retried — there is no "next" value to
+ *  step to when the operator chose every value themselves; the caller surfaces this list so
+ *  a collision is seen before sending rather than after the org rejects the file. */
+async function checkManualCollisions(series, manualValues, manualNames, checkTaken) {
+  if (!checkTaken) return [];
+  const candidates = manualNames
+    .filter((name) => isCheckable(series[name]))
+    .flatMap((name) => manualValues[name].map((v) => String(v).trim()));
+  if (!candidates.length) return [];
+  return checkTaken(candidates);
+}
+
+/** A numeric series can only hold so many more ids; refuse before minting a narrow one.
+ *  Only checked for series this call is actually allocating — a manually supplied value is
+ *  the operator's own choice and is not measured against the counter's ceiling. */
+function assertHeadroom(series, starts, n, names) {
+  const nb = BigInt(n);
+  for (const name of names) {
+    const def = series[name];
+    if (def.type === 'numeric' && starts[name] + nb - 1n > numericCeiling(def)) {
+      throw new Error(
+        `Series "${name}" would overflow ${def.digits} digits at ${(starts[name] + nb - 1n).toString()}. ` +
           'Reset this series\' counter on the Ids screen.'
       );
     }
@@ -215,7 +290,9 @@ function assertHeadroom(series, starts, n) {
 function probeSpan(def, start, n) {
   const want = n + LOOKAHEAD;
   if (def.type !== 'numeric') return want;
-  const room = numericCeiling(def) - start + 1;
+  const ceiling = numericCeiling(def);
+  if (ceiling === Infinity) return want;
+  const room = ceiling - Number(start) + 1;
   return Math.max(n, Math.min(want, room));
 }
 
@@ -228,7 +305,7 @@ function firstFreeRun(def, start, n, span, takenSet) {
   for (let offset = 0; offset + n <= span; offset++) {
     let free = true;
     for (let i = 0; i < n; i++) {
-      if (takenSet.has(formatValue(def, start + offset + i))) {
+      if (takenSet.has(formatValue(def, start + BigInt(offset + i)))) {
         offset += i;
         free = false;
         break;
@@ -239,21 +316,34 @@ function firstFreeRun(def, start, n, span, takenSet) {
   return -1;
 }
 
-function buildRows(series, starts, n) {
+function buildRows(series, starts, n, manualValues = {}) {
   return Array.from({ length: n }, (_, i) => {
     const row = {};
-    for (const [name, def] of Object.entries(series)) row[name] = formatValue(def, starts[name] + i);
+    for (const [name, def] of Object.entries(series)) {
+      row[name] = Array.isArray(manualValues[name])
+        ? String(manualValues[name][i]).trim()
+        : formatValue(def, starts[name] + BigInt(i));
+    }
     return row;
   });
 }
 
-function finish({ env, templateId, series, starts, n, rows, attempts, checked, collisions }) {
+function rangesFor(series, starts, n, manualValues = {}) {
   const ranges = {};
   for (const [name, def] of Object.entries(series)) {
-    ranges[name] = { from: formatValue(def, starts[name]), to: formatValue(def, starts[name] + n - 1) };
-    setCursor(env, templateId, name, starts[name] + n);
+    if (Array.isArray(manualValues[name])) {
+      ranges[name] = { from: String(manualValues[name][0]).trim(), to: String(manualValues[name][n - 1]).trim() };
+    } else {
+      ranges[name] = { from: formatValue(def, starts[name]), to: formatValue(def, starts[name] + BigInt(n) - 1n) };
+    }
   }
-  return { rows, attempts, checked, collisions, ranges };
+  return ranges;
+}
+
+function finish({ env, templateId, series, starts, n, rows, autoNames, attempts, checked, collisions, manualValues, manualCollisions }) {
+  const ranges = rangesFor(series, starts, n, manualValues);
+  for (const name of autoNames) setCursor(env, templateId, name, starts[name] + BigInt(n));
+  return { rows, attempts, checked, collisions, manualCollisions, ranges };
 }
 
 /**
