@@ -655,6 +655,12 @@ runsRouter.post('/:runId/generate', async (req, res, next) => {
         }
       }
 
+      // A subset from the Watch page names devices, not families, so on a mixed run it routinely
+      // covers none of some group's devices. That group simply has nothing to do this time: skip
+      // it and leave any file it already has untouched. Throwing here refused the whole request —
+      // including the families that did match — with "no rows to write".
+      if (deviceIdsFilter && rows.length === 0) continue;
+
       const artifact = buildCsv(template, {
         trackingId: run.trackingId,
         fields: group.fields,
@@ -691,6 +697,13 @@ runsRouter.post('/:runId/generate', async (req, res, next) => {
         });
         built.push(saveArtifact(run.runId, artifactKey('wizardUpload', 'shared'), artifact));
       }
+    }
+
+    if (deviceIdsFilter && built.length === 0 && blocked.length === 0) {
+      throw new Error(
+        `None of the ${deviceIdsFilter.size} selected device(s) belong to this run, so there is ` +
+          `nothing to write for ${operation}.`
+      );
     }
 
     appendEvent(run.runId, 'files.generated', built.map((b) => b.filename).join(', '));
