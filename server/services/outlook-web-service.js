@@ -320,6 +320,40 @@ export function composeRetryDecision(panelCount) {
 }
 
 /**
+ * May this control be clicked as "Send"?
+ *
+ * Outlook renders Send as two adjacent buttons: the real `<button aria-label="Send">`, and beside
+ * it a caret, `<button role="button" aria-label="More send options" aria-haspopup="menu">`, which
+ * opens Send / Schedule send / Start mail merge. Confirmed against the live mailbox 2026-09-16.
+ *
+ * `SEND_SELECTORS` ends with `[role="button"][aria-label*="Send" i]`. That matches "More send
+ * options" and *cannot* match the real Send, which carries no literal `role` attribute. So the
+ * last rung of the escalation ladder can only ever open a menu. On 2026-09-16 that is exactly
+ * what happened: Outlook had greyed Send out while it finished the attachment, every selector
+ * meaning the real button was correctly skipped as disabled, and the caret - never disabled - was
+ * the only enabled match left. It was clicked, a menu opened, and the run failed after 207s with
+ * a fully composed message that had gone nowhere.
+ *
+ * The rule, which does not depend on any particular label: a control that opens a popup is not a
+ * control that performs an action. `aria-haspopup` is how the page says so itself.
+ *
+ * Pure so it can be tested without a browser (`outlook-compose.test.js`).
+ *
+ * @param {{visible: boolean, disabled: boolean, ariaDisabled: string|null,
+ *          hasPopup: string|null}} control  as read off the DOM
+ * @returns {'click'|'skip'}
+ */
+export function sendControlDecision(control) {
+  // Anything short of a positively readable, visible, enabled, popup-free control is skipped:
+  // this is the last gate before a real email leaves, so an unknown must not become a click.
+  if (!control || control.visible !== true) return 'skip';
+  if (control.disabled !== false) return 'skip';
+  if (control.ariaDisabled === 'true') return 'skip';
+  if (control.hasPopup != null && control.hasPopup !== 'false') return 'skip';
+  return 'click';
+}
+
+/**
  * Click "New mail" and confirm a compose form actually opened.
  *
  * Playwright ignores the timeout on `isVisible()`, so probing per-selector that way returns in
@@ -638,6 +672,23 @@ async function sendLooksConfirmed(page) {
   return !(await sendBtn.isVisible().catch(() => false));
 }
 
+/**
+ * Read the facts `sendControlDecision` judges a control on. An attribute that cannot be read is
+ * reported as its unsafe value (`disabled: true`), so an unreadable control is skipped rather
+ * than clicked — this is the last gate before a real email leaves.
+ */
+async function readSendControl(locator) {
+  if (!(await locator.isVisible().catch(() => false))) {
+    return { visible: false, disabled: false, ariaDisabled: null, hasPopup: null };
+  }
+  return {
+    visible: true,
+    disabled: await locator.isDisabled().catch(() => true),
+    ariaDisabled: await locator.getAttribute('aria-disabled').catch(() => null),
+    hasPopup: await locator.getAttribute('aria-haspopup').catch(() => null),
+  };
+}
+
 /** Wait for Send to become enabled — attachment processing disables it. */
 async function waitForSendEnabled(page) {
   const deadline = Date.now() + SEND_ENABLE_MS;
@@ -661,8 +712,6 @@ async function waitForSendEnabled(page) {
  * again would send a second copy — at the far end, a duplicate device load.
  */
 async function clickSend(page) {
-  await waitForSendEnabled(page);
-
   const msgTab = page.locator('[role="tab"]:has-text("Message"), button:has-text("Message")').first();
   if (await msgTab.isVisible({ timeout: 2000 }).catch(() => false)) {
     await msgTab.click().catch(() => {});
@@ -699,9 +748,7 @@ async function clickSend(page) {
     }
 
     const btn = page.locator(selector).first();
-    if (!(await btn.isVisible().catch(() => false))) continue;
-    if (await btn.isDisabled().catch(() => false)) continue;
-    if ((await btn.getAttribute('aria-disabled').catch(() => null)) === 'true') continue;
+    if (sendControlDecision(await readSendControl(btn)) === 'skip') continue;
 
     await btn.scrollIntoViewIfNeeded().catch(() => {});
     await btn
@@ -952,6 +999,33 @@ export async function composeAndSend(
         `Outlook now has ${panelsAtSend} compose windows open, up from 1 when this message was ` +
           `filled in. Refusing to click Send — it could land on the wrong one.${shot}`
       );
+    }
+
+    // Outlook greys Send out while it finishes preparing the message — attachment processing is
+    // the usual reason. If it never comes back, stop here rather than hunting for something else
+    // to click. On 2026-09-16 that hunt ended on the "More send options" caret, which opened a
+    // menu and sent nothing, after a 207s round trip that reported a failure the operator then
+    // had to verify by hand. Nothing is recorded as sent: the message is fully composed and saved
+    // in Outlook's Drafts, so it is handed back the same way a compose-and-stop is, and the
+    // operator's own Send is confirmed against Sent Items before any record is written.
+    if (!(await waitForSendEnabled(page))) {
+      const details = await captureFailureContext(page);
+      Object.assign(held, { browser, context, page, subject });
+      return {
+        sent: false,
+        composed: true,
+        awaitingYourSend: true,
+        to: recipients.join(', '),
+        subject,
+        attachment: path.basename(attachmentPath),
+        attachedVia,
+        attachedPerOutlook: csvs,
+        message:
+          `Outlook kept Send disabled for ${Math.round(SEND_ENABLE_MS / 1000)}s, so nothing was ` +
+          'sent. The message is composed and saved in your Outlook Drafts, addressed and with the ' +
+          'CSV attached — open Outlook, press Send there, then confirm here so the app can check ' +
+          `Sent Items.${details}`,
+      };
     }
 
     const clicked = await clickSend(page);
