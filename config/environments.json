@@ -141,7 +141,7 @@
       "distributionLists": {
         "$comment": [
           "Every Staging address is a Salesforce Apex email service, not a netradyne.com mailbox.",
-          "All six share the host suffix cw-5p40juac.usa886s.apex.sandbox.salesforce.com but each",
+          "All share the host suffix ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com (re-copied 2026-09-29) but each",
           "service has its own random subdomain. These are generated per org and CHANGE ON SANDBOX",
           "REFRESH — re-copy all of them from Setup > Email Services after any refresh, or sends",
           "will bounce.",
@@ -152,33 +152,33 @@
         ],
         "byOperation": {
           "initialLoad": {
-            "to": "assets_shipped_from_vvdn@n-kcf9xc8epagbqzn8s2n0auzvvhctyaemf5dyqsn4gzj7fp05t.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "to": "assets_shipped_from_vvdn@x-2qkyl8lwpt0hkl0fhdo47a386mdixa6fgxpwazz760bnj4y1uk.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Initial Load File",
             "body": "Please find the attached updated Initial Load CSV."
           },
           "shipmentUpdate": {
-            "to": "asset-shipment-update-from-mfr@8-2q8l2fcsqnydqmqpdolb5c1vvczlql24bplioi5vynwvq5kb5k.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "to": "asset-shipment-update-from-mfr@h-2yyv8wztplf5hmz6fvc2o76jw2qbkiexeapjpoqeb5d42wlvrv.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Shipment Update",
             "body": "Please find the attached Initial Load CSV for shipment update processing."
           },
           "received": {
-            "to": "assets_received_at_3pl@27feq64a77zk2ur4893dc4ikcr5wcj5lambng671go540753pg.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "to": "assets_received_at_3pl@1avjnvp2d0dcaqsrkr4phes0md2f3dnvalpcbk9eaowt1y1rxn.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Device Received",
             "body": "Please find the attached Received CSV."
           },
           "faultyReturned": {
             "$comment": "Labelled 'Asset Returned' in the Staging list. Same local part as testing's 'Faulty Devices Returned', which is what identifies them as the same operation.",
-            "to": "assets_returned_to_vvdn@1idbjnw3je6tkz14adazujydgbkewyh9e9gm3u79j9655fua9g.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "to": "assets_returned_to_vvdn@q-9td09pqrj6whegapwaqxg0btszk8mvzx7nni6p19gtpt5v6l.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Faulty Devices Returned",
             "body": "Please find the attached Faulty Devices Returned CSV."
           },
           "deviceDead": {
-            "to": "asset_markdead_emailservice@srvv3bp9arputgc7pvyynut85ugbfmwn5drm400808hfufkkn.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "to": "asset_markdead_emailservice@blibzpy235qo9x3gkcjqgtjnf8gr2spxchxwxwwhf6njbgpy0.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Device Dead",
             "body": "Please find the attached Device Dead CSV."
           },
           "undoDead": {
-            "to": "asset_markundodead_emailservice@u-17hv62turjunobzrzfytmp0ukcbe31xtytao41or3qpft82xau.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "to": "asset_markundodead_emailservice@1lro5rdhepnlutsl5158tcl6ey3bbv7t0dvkvyvach84sjx3m5.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Undo Device Dead",
             "body": "Please find the attached Undo Device Dead CSV."
           },
@@ -189,14 +189,14 @@
             "body": "Please find the attached Update Load CSV."
           },
           "nonRepairable": {
-            "$comment": "NOT supplied for Staging. Testing has Non-Repairable-Asset-At-MFR-Testing@netradyne.com; no Staging equivalent was given.",
-            "to": "REPLACE_ME_no_non_repairable_DL_supplied_for_staging",
+            "$comment": "Supplied 2026-09-29 as Non-Repairable-Asset-At-MFR-Staging@netradyne.com; this is its Apex email service member.",
+            "to": "assets_non_repairable_at_repair_center@l-mr90jp7r8doj5zzuaobsmni54w93cej21kj4rxeyiqffqohgx.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Non-Repairable Asset At MFR",
             "body": "Please find the attached Non-Repairable Asset CSV."
           },
           "dataUpdate": {
             "$comment": "Same as initialLoad for Staging — Apex email service.",
-            "to": "assets_shipped_from_vvdn@n-kcf9xc8epagbqzn8s2n0auzvvhctyaemf5dyqsn4gzj7fp05t.cw-5p40juac.usa886s.apex.sandbox.salesforce.com",
+            "to": "assets_shipped_from_vvdn@x-2qkyl8lwpt0hkl0fhdo47a386mdixa6fgxpwazz760bnj4y1uk.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "Data Update",
             "body": "Please find the attached Data Update CSV."
           },
