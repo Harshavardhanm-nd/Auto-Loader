@@ -673,6 +673,42 @@ export async function fetchAssetsByDeviceId(env, deviceIds) {
   return out.map((a) => shapeAsset(a));
 }
 
+/**
+ * The two accounts Undo Dead needs per device: where it sits now, and the customer it belonged to
+ * before its return (`Prior_to_RMA_AccountId__c`) — see `undo-dead-account.js` for which one the
+ * sheet uses and why.
+ *
+ * Its own query, deliberately not part of FIELDS_FOR_WATCH: the prior-account field is custom,
+ * SOQL fails the whole SELECT on a field an org lacks, and every Watch tab reads that list. Here
+ * a missing field fails only Undo Dead, with Salesforce's own message naming it.
+ *
+ * @returns {Promise<Map<string, {currentAccountId: string|null, priorAccountId: string|null}>>}
+ *          keyed by the device id as asked for (leading zeros restored)
+ */
+export async function fetchUndoDeadAccounts(env, deviceIds) {
+  const ids = [...new Set(deviceIds.map(String))].filter(Boolean);
+  const strippedToOriginal = new Map(ids.map((id) => [id.replace(/^0+/, '') || id, id]));
+  const queryIds = [...strippedToOriginal.keys()];
+
+  const out = new Map();
+  const CHUNK = 200;
+  for (let i = 0; i < queryIds.length; i += CHUNK) {
+    const records = await query(
+      env,
+      `SELECT Name, AccountId, Prior_to_RMA_AccountId__c
+         FROM Asset
+        WHERE Name IN (${soqlInList(queryIds.slice(i, i + CHUNK))})`
+    );
+    for (const a of records) {
+      out.set(strippedToOriginal.get(a.Name) ?? a.Name, {
+        currentAccountId: a.AccountId ?? null,
+        priorAccountId: a.Prior_to_RMA_AccountId__c ?? null,
+      });
+    }
+  }
+  return out;
+}
+
 /** Everything for one order, including devices not yet attached to it. */
 export async function fetchAssetsByTrackingId(env, orderNumber) {
   const records = await query(

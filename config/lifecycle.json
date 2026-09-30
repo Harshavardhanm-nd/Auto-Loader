@@ -271,9 +271,9 @@
     {
       "from": 6,
       "to": 8,
-      "label": "Received by Netradyne",
-      "driver": { "kind": "external", "actor": "Netradyne receiving" },
-      "uncertain": "Same as the RMA leg — external until the sheet for it is confirmed."
+      "label": "Returned Non-RMA",
+      "driver": { "kind": "operation", "operation": "rmaReturned" },
+      "$comment": "Confirmed 2026-09-30 by the operator: the non-RMA return is sent with the same email and the same RMA Returned sheet as the RMA leg (5 -> 7). Was an uncertain external 'Received by Netradyne' arrow until then."
     },
     {
       "from": 7,

@@ -208,7 +208,14 @@ catalogRouter.get('/templates', (req, res) => {
       // Which fields the UI should offer for editing, and which columns are always blank.
       editableFields: t.columns
         .filter((c) => c.source?.startsWith('field.'))
-        .map((c) => ({ column: c.name, field: c.source.slice('field.'.length), required: Boolean(c.required) })),
+        .map((c) => ({
+          column: c.name,
+          field: c.source.slice('field.'.length),
+          required: Boolean(c.required),
+          // A closed vocabulary (Undo Dead's reasons). Sent so the UI offers exactly what
+          // `buildCsv` will accept, from the one place both read.
+          allowedValues: c.allowedValues ?? null,
+        })),
       reusesExistingDevices: Boolean(t.reusesExistingDevices),
       awaiting: t.awaiting ?? null,
       notes: t.notes ?? [],

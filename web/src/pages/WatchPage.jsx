@@ -1,7 +1,8 @@
 import React from 'react';
 import { api } from '../api.js';
-import { Badge, Callout, Explainer, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spinner } from '../components/ui.jsx';
-import { partitionHandoff } from '../lib/handoff.js';
+import { Badge, Callout, Explainer, Field, PageHead, Segmented, Sheet, Stat, SyncStatusBadge, Spinner } from '../components/ui.jsx';
+import { partitionDeadSelection, partitionHandoff } from '../lib/handoff.js';
+import { ASSET_VIEW_TABS, ASSET_VIEW_TAB_IDS, filterViewRows, isSelectableView } from '../lib/asset-views.js';
 
 /**
  * Polling view.
@@ -95,6 +96,10 @@ export default function WatchPage({
   const [stage, setStage] = React.useState('initialLoad');
   const [poll, setPoll] = React.useState(null);
   const [busy, setBusy] = React.useState(null);
+  // Undo Dead's reason: chosen per file, never defaulted — it is recorded on the device. The
+  // list comes from the descriptor, the same one `buildCsv` checks against.
+  const [undoReason, setUndoReason] = React.useState('');
+  const [undoReasons, setUndoReasons] = React.useState(null);
   const [selected, setSelected] = React.useState(new Set());
   // Devices that have gone on to a later operation are hidden by default: this tab is about the
   // devices at this stage. The send's own record is one click away, never lost.
@@ -254,9 +259,13 @@ export default function WatchPage({
    * first is safe. An operation the model does not know returns null and the hand-off simply omits
    * the arrow rather than guessing at a destination.
    */
+  // `from` picks the arrow when one operation has several: RMA Returned moves 5 → 7 on the
+  // RMA leg and 6 → 8 on the non-RMA one, and the label must name where *these* devices go.
   const nextStageLabel = React.useCallback(
-    (operation) => {
-      const move = (model?.transitions ?? []).find((t) => t.operation === operation);
+    (operation, from) => {
+      const move = (model?.transitions ?? []).find(
+        (t) => t.operation === operation && (from === undefined || t.from === from)
+      );
       if (!move) return null;
       return (model?.stages ?? []).find((s) => s.code === move.to)?.label ?? null;
     },
@@ -281,6 +290,22 @@ export default function WatchPage({
     }, 3000);
     return () => clearInterval(timer);
   }, [poll?.running, load, refreshRun]);
+
+  // Above the `!run` early return: a hook must run on every render, in the same order. Placed
+  // below it, the first render (run still loading) skipped this hook and the next one ran it,
+  // and React threw "Rendered more hooks than during the previous render", crashing the page.
+  React.useEffect(() => {
+    if (stage !== 'deadView' || undoReasons) return;
+    api
+      .templates()
+      .then(({ templates }) => {
+        const field = templates
+          .find((t) => t.operation === 'undoDead')
+          ?.editableFields.find((f) => f.field === 'undo_dead_reason');
+        setUndoReasons(field?.allowedValues ?? []);
+      })
+      .catch(() => setUndoReasons([]));
+  }, [stage, undoReasons]);
 
   if (!run) return <p className="muted">Loading run…</p>;
 
@@ -370,9 +395,10 @@ export default function WatchPage({
       r.syncStatus === 'SHIPMENT_UPDATE_SYNC_SUCCESS'
   );
 
-  // Rows eligible for Mark Dead: IDMS 7 (Returned RMA) in the rmaReturned poll tab.
+  // Rows eligible for Mark Dead in the rmaReturned poll tab: the email lands a device on IDMS 7
+  // (Returned RMA) or 8 (Returned Non-RMA), and Dead is reachable from both.
   const deadEligibleRows = (snapshot?.rows ?? []).filter(
-    (r) => stage === 'rmaReturned' && Number(r.idmsStatus) === 7
+    (r) => stage === 'rmaReturned' && [7, 8].includes(Number(r.idmsStatus))
   );
 
   // Rows on the received tab that have synced — used for the order-processing CSV only.
@@ -414,10 +440,10 @@ export default function WatchPage({
    * file; sending the whole selection to both is what produced `blocked` families and left the
    * other family with nothing written and no offered way forward.
    */
-  const generateFor = async (operation, deviceIds) => {
+  const generateFor = async (operation, deviceIds, extra) => {
     setBusy(`${operation}Gen`);
     try {
-      const result = await api.generate(runId, operation, deviceIds);
+      const result = await api.generate(runId, operation, deviceIds, extra);
       // `blocked` names families the operation could not be written for. With the ids now scoped
       // per operation this should not fire on a mixed run, so if it does it is real news.
       if (result?.blocked?.length) {
@@ -438,6 +464,14 @@ export default function WatchPage({
   const sendToRmaReturned = (deviceIds = [...selected]) => generateFor('rmaReturned', deviceIds);
 
   const sendToDeviceDead = (deviceIds = [...selected]) => generateFor('deviceDead', deviceIds);
+
+  // The DEAD tab lists devices on their way to Dead and devices already there; only the latter
+  // can be undone. Split by the device's own IDMS status, so each button covers exactly the
+  // devices it can act on.
+  const deadSelection = partitionDeadSelection(
+    stage === 'deadView' ? filterViewRows(viewPoll?.snapshot?.rows, 'deadView') : [],
+    selected
+  );
 
   /**
    * The hand-off this stage offers for the ticked devices: which operation, what to call it, and
@@ -642,7 +676,7 @@ export default function WatchPage({
               title: s.movesTo ? `Moves the device to ${s.movesTo}` : 'Does not change the stage',
               done: Object.values(run.sends ?? {}).some((x) => x.operation === s.id && x.ok),
             })),
-            ...ASSET_VIEW_TABS.filter((t) => t.id !== 'deadView').map((t) => ({ value: t.id, label: t.label, title: t.title })),
+            ...ASSET_VIEW_TABS.filter((t) => t.group === 'rma').map((t) => ({ value: t.id, label: t.label, title: t.title })),
             // rmaReturned poll tab placed after rmaInitiated view tab
             ...stages.filter((s) => s.id === 'rmaReturned').map((s) => ({
               value: s.id,
@@ -650,8 +684,9 @@ export default function WatchPage({
               title: s.movesTo ? `Moves the device to ${s.movesTo}` : 'Does not change the stage',
               done: Object.values(run.sends ?? {}).some((x) => x.operation === s.id && x.ok),
             })),
-            // Dead view tab placed after rmaReturned
-            { value: 'deadView', label: 'DEAD', title: 'Non-Repairable by Repair Partner sync status' },
+            // The non-RMA path after the RMA one, in the order a device meets them (11 → 6 → 8),
+            // and DEAD last so the destructive operation is never beside an ordinary one.
+            ...ASSET_VIEW_TABS.filter((t) => t.group === 'nonRma' || t.group === 'dead').map((t) => ({ value: t.id, label: t.label, title: t.title })),
           ]}
         />
 
@@ -682,11 +717,25 @@ export default function WatchPage({
         />
       ) : null}
 
+      {stage === 'nonRmaInitiated' && selected.size > 0 ? (
+        <Sheet>
+          <NextStepAction
+            operationLabel="RMA Returned"
+            toLabel={nextStageLabel('rmaReturned', 6)}
+            description="Non-warranty returns received back — the same RMA Returned email and CSV as the RMA leg."
+            count={selected.size}
+            busy={busy === 'rmaReturnedGen'}
+            onClick={() => sendToRmaReturned()}
+            actionLabel="Send to RMA Returned"
+          />
+        </Sheet>
+      ) : null}
+
       {stage === 'rmaInitiated' && selected.size > 0 ? (
         <Sheet>
           <NextStepAction
             operationLabel="RMA Returned"
-            toLabel={nextStageLabel('rmaReturned')}
+            toLabel={nextStageLabel('rmaReturned', 5)}
             description="Faulty devices received back at the repair partner — same devices, same ids."
             count={selected.size}
             busy={busy === 'rmaReturnedGen'}
@@ -696,17 +745,68 @@ export default function WatchPage({
         </Sheet>
       ) : null}
 
-      {stage === 'deadView' && selected.size > 0 ? (
+      {stage === 'returnedNonRma' && selected.size > 0 ? (
         <Sheet>
           <NextStepAction
             operationLabel="Mark Dead"
             toLabel={nextStageLabel('deviceDead')}
-            description="Non-repairable at the repair partner — same devices, same ids."
+            description="Returned outside warranty and not being refurbished — same devices, same ids."
             count={selected.size}
             busy={busy === 'deviceDeadGen'}
             onClick={() => sendToDeviceDead()}
             actionLabel="Move to Dead"
           />
+        </Sheet>
+      ) : null}
+
+      {stage === 'deadView' && deadSelection.markDead.length > 0 ? (
+        <Sheet>
+          <NextStepAction
+            operationLabel="Mark Dead"
+            toLabel={nextStageLabel('deviceDead')}
+            description="Non-repairable at the repair partner — same devices, same ids."
+            count={deadSelection.markDead.length}
+            busy={busy === 'deviceDeadGen'}
+            onClick={() => sendToDeviceDead(deadSelection.markDead.map((r) => r.deviceId))}
+            actionLabel="Move to Dead"
+          />
+        </Sheet>
+      ) : null}
+
+      {stage === 'deadView' && deadSelection.undoDead.length > 0 ? (
+        <Sheet>
+          <NextStepAction
+            operationLabel="Undo Dead"
+            toLabel={nextStageLabel('undoDead')}
+            description="Devices at IDMS 9 (Dead) back into stock. AccountId is read from each Asset when the file is written."
+            count={deadSelection.undoDead.length}
+            busy={busy === 'undoDeadGen'}
+            disabled={!undoReason}
+            onClick={() =>
+              generateFor(
+                'undoDead',
+                deadSelection.undoDead.map((r) => r.deviceId),
+                { undoDeadReason: undoReason }
+              )
+            }
+            actionLabel={undoReason ? 'Generate Undo Dead' : 'Pick a reason first'}
+          />
+          <Field label="UndoDead Reason" raw hint="One reason for every device in this file. Different reasons need separate files.">
+            <select value={undoReason} onChange={(e) => setUndoReason(e.target.value)}>
+              <option value="">Choose a reason…</option>
+              {(undoReasons ?? []).map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {undoReasons && undoReasons.length === 0 ? (
+            <Callout tone="warn">
+              Could not read the Undo Dead reasons from the server, so this file cannot be generated.
+              Reload the page to try again.
+            </Callout>
+          ) : null}
         </Sheet>
       ) : null}
 
@@ -1087,46 +1187,6 @@ export default function WatchPage({
   );
 }
 
-const ASSET_VIEW_TABS = [
-  { id: 'shippedActive', label: 'Shipped Active', title: 'NEW_ORDER_FULFILMENT or IDMS 2 + success' },
-  { id: 'installed',     label: 'Installed',      title: 'IDMS status 4' },
-  { id: 'rmaPending',    label: 'RMA Pending',    title: 'IDMS status 10' },
-  { id: 'rmaInitiated',  label: 'RMA Initiated',  title: 'IDMS status 5' },
-  { id: 'deadView',      label: 'DEAD',           title: 'Non-Repairable by Repair Partner sync status' },
-];
-const ASSET_VIEW_TAB_IDS = new Set(ASSET_VIEW_TABS.map((t) => t.id));
-
-function filterViewRows(rows, tab) {
-  if (!rows) return [];
-  switch (tab) {
-    case 'shippedActive':
-      return rows.filter(
-        (r) =>
-          r.syncStatus === 'NEW_ORDER_FULFILMENT' ||
-          r.syncStatus === 'NEW_ORDER_FULFILMENT_SYNC_FAILED' ||
-          (Number(r.idmsStatus) === 2 && r.syncStatus === 'NEW_ORDER_FULFILMENT_SYNC_SUCCESS'),
-      );
-    case 'installed':  return rows.filter((r) => Number(r.idmsStatus) === 4);
-    case 'rmaPending': return rows.filter((r) => Number(r.idmsStatus) === 10);
-    case 'rmaInitiated':
-      return rows.filter(
-        (r) =>
-          Number(r.idmsStatus) === 5 &&
-          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER' &&
-          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_SUCCESS' &&
-          r.syncStatus !== 'FAULTY_DEVICE_RECEIVED_AT_REPAIR_PARTNER_SYNC_FAILED',
-      );
-    case 'deadView':
-      return rows.filter(
-        (r) =>
-          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER' ||
-          r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_FAILED' ||
-          (r.syncStatus === 'NON_REPAIRABLE_BY_REPAIR_PARTNER_SYNC_SUCCESS' && Number(r.idmsStatus) === 9),
-      );
-    default: return [];
-  }
-}
-
 function ViewTabContent({
   stage,
   sfBase,
@@ -1139,7 +1199,7 @@ function ViewTabContent({
 }) {
   const rows = filterViewRows(viewPoll?.snapshot?.rows, stage);
   const tabMeta = ASSET_VIEW_TABS.find((t) => t.id === stage);
-  const selectable = stage === 'rmaInitiated' || stage === 'deadView';
+  const selectable = isSelectableView(stage);
 
   if (viewBusy && !viewPoll) return <Sheet><Spinner label="Loading…" /></Sheet>;
   if (!viewPoll?.snapshot) {
@@ -1237,10 +1297,14 @@ function ViewTabContent({
           what is left to say is how current these rows are — without a stamp, an automatic refresh
           that quietly failed is indistinguishable from one that worked. */}
       <p className="prose small" style={{ marginTop: '0.7rem', marginBottom: 0 }}>
-        {stage === 'rmaInitiated'
+        {stage === 'rmaInitiated' || stage === 'nonRmaInitiated'
           ? 'Select devices to generate the RMA Returned CSV. '
           : stage === 'deadView'
           ? 'Devices flagged Non-Repairable by Repair Partner. '
+          : stage === 'returnedNonRma'
+          ? 'Select devices to generate the Dead CSV. '
+          : stage === 'nonRmaPending'
+          ? 'Moved on when Support raises the return, not by an email from this app. '
           : ''}
         <Freshness poll={viewPoll} busy={viewBusy} error={refreshError} />
       </p>
@@ -1570,7 +1634,7 @@ function ResultCard({ run, runId, refreshRun, onError }) {
  * generates for **exactly** the ticked devices, so a hand-off raised for a subset carries that
  * subset and no more. Ticking the header checkbox is how you send them all.
  */
-function NextStepAction({ operationLabel, toLabel, description, count, families, busy, onClick, actionLabel }) {
+function NextStepAction({ operationLabel, toLabel, description, count, families, busy, disabled = false, onClick, actionLabel }) {
   return (
     <div className="lc-next">
       <div style={{ minWidth: 0 }}>
@@ -1586,7 +1650,7 @@ function NextStepAction({ operationLabel, toLabel, description, count, families,
         </div>
         <div className="muted small">{description}</div>
       </div>
-      <button className="btn" disabled={busy} onClick={onClick}>
+      <button className="btn" disabled={busy || disabled} onClick={onClick}>
         {busy ? 'Generating…' : actionLabel}
       </button>
     </div>

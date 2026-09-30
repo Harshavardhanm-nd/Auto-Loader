@@ -34,7 +34,10 @@
  * only the arithmetic that was silently lossy has changed.
  */
 
-import { COUNTERS_FILE, readJson, writeJson } from '../lib/paths.js';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { COUNTERS_FILE, RUNS_DIR, readJson, writeJson } from '../lib/paths.js';
 
 const MAX_ATTEMPTS = 8;
 /** Ids probed past the block itself, so one round trip can step over a batch loaded earlier. */
@@ -66,14 +69,109 @@ function counterKey(env, templateId, seriesName) {
   return `${env}:${templateId}:${seriesName}`;
 }
 
+// ---------------------------------------------------------------------------
+// High-water mark: the highest id this app has ever minted, per env:template:series
+// ---------------------------------------------------------------------------
+//
+// The collision check asks Salesforce, and Salesforce forgets on a sandbox refresh. IDMS does
+// not: on 2026-09-29 staging was refreshed, the counters were Reset back onto sampleStart, and
+// the next 40 devices were ids IDMS already held — every one INITIAL_DEVICE_LOAD_SYNC_FAILED.
+// This mark is this app's own memory of what it minted, kept on this machine, so it survives a
+// refresh. It is the max of what `finish()` recorded and what the run history shows — the
+// history is what covers everything minted before the mark existed.
+//
+// It cannot see ids someone else loaded into IDMS. Nothing here can.
+
+/**
+ * The first id a series may use: its cursor, unless that is at or below an id already minted.
+ *
+ * @param {bigint} cursor
+ * @param {bigint|null} highWater
+ */
+export function effectiveStart(cursor, highWater) {
+  if (highWater === null || cursor > highWater) return cursor;
+  return highWater + 1n;
+}
+
+/**
+ * Why a cursor may not be moved to `value`, or null if it may. Moving forward is always fine;
+ * moving onto an id already minted re-issues it, and IDMS rejects the load.
+ */
+export function cursorMoveRefusal({ value, highWater, env }) {
+  if (highWater === null || value > highWater) return null;
+  return (
+    `${value} is at or below ${highWater}, the highest id this app has already minted for ` +
+    `${env}. Those devices still exist in IDMS even if Salesforce no longer shows them — a ` +
+    `sandbox refresh empties Salesforce, not IDMS — so reusing them fails the sync with "asset ` +
+    `already exists". Pick a value above ${highWater}.`
+  );
+}
+
+/**
+ * Highest counter-minted value of one series across a set of runs. Pure: takes parsed runs.
+ * A series the operator typed in by hand for a group is skipped — it is not counter history.
+ *
+ * @returns {bigint|null}
+ */
+export function highestMinted(runs, env, templateId, seriesName) {
+  let max = null;
+  for (const run of runs ?? []) {
+    if (!run || run.env !== env) continue;
+    for (const group of run.groups ?? []) {
+      if (group?.templateId !== templateId) continue;
+      const allocation = run.idGeneration?.allocations?.find?.((a) => a?.family === group.family);
+      if (allocation?.manualSeries?.includes(seriesName)) continue;
+      for (const line of group.lines ?? []) {
+        for (const row of line?.generatedRows ?? []) {
+          const raw = row?.generated?.[seriesName] ?? row?.[seriesName];
+          if (!/^\d+$/.test(String(raw ?? ''))) continue;
+          const value = BigInt(raw);
+          if (max === null || value > max) max = value;
+        }
+      }
+    }
+  }
+  return max;
+}
+
+function loadRuns() {
+  let names;
+  try {
+    names = fs.readdirSync(RUNS_DIR).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  return names.map((f) => readJson(path.join(RUNS_DIR, f), null));
+}
+
+/** The high-water mark for one series: recorded mark and run history, whichever is higher. */
+export function highWaterMark(env, templateId, seriesName, runs = loadRuns()) {
+  const stored = loadCounters().highWater?.[counterKey(env, templateId, seriesName)];
+  const recorded = stored == null ? null : toBig(stored);
+  const history = highestMinted(runs, env, templateId, seriesName);
+  if (recorded === null) return history;
+  if (history === null) return recorded;
+  return recorded > history ? recorded : history;
+}
+
+function recordHighWater(env, templateId, seriesName, value) {
+  const counters = loadCounters();
+  const key = counterKey(env, templateId, seriesName);
+  const current = counters.highWater?.[key];
+  if (current != null && toBig(current) >= value) return;
+  counters.highWater = { ...counters.highWater, [key]: value.toString() };
+  writeJson(COUNTERS_FILE, counters);
+}
+
 /**
  * Where a series will start next. Seeded from the descriptor's sampleStart on first use —
- * that value came from a sheet the parser accepted, so it is a known-good neighbourhood.
+ * that value came from a sheet the parser accepted, so it is a known-good neighbourhood — and
+ * never at or below an id this app has already minted in this environment.
  */
-export function peekCursor(env, templateId, seriesName, seriesDef) {
+export function peekCursor(env, templateId, seriesName, seriesDef, runs) {
   const stored = loadCounters()[counterKey(env, templateId, seriesName)];
-  if (stored === undefined || stored === null) return toBig(seriesDef.sampleStart);
-  return toBig(stored);
+  const cursor = stored === undefined || stored === null ? toBig(seriesDef.sampleStart) : toBig(stored);
+  return effectiveStart(cursor, highWaterMark(env, templateId, seriesName, runs));
 }
 
 /** Stored as a decimal string — `JSON.stringify` cannot carry a BigInt, and a string never
@@ -96,11 +194,20 @@ export function resetCursor(env, templateId, seriesName, seriesDef) {
 
 /** All cursors for a template, for display on the Devices screen. */
 export function describeCursors(env, templateId, series) {
+  const runs = loadRuns();
   return Object.fromEntries(
-    Object.entries(series ?? {}).map(([name, def]) => [
-      name,
-      { next: formatValue(def, peekCursor(env, templateId, name, def)), type: def.type, digits: def.digits ?? null },
-    ])
+    Object.entries(series ?? {}).map(([name, def]) => {
+      const highWater = highWaterMark(env, templateId, name, runs);
+      return [
+        name,
+        {
+          next: formatValue(def, peekCursor(env, templateId, name, def, runs)),
+          highWater: highWater === null ? null : formatValue(def, highWater),
+          type: def.type,
+          digits: def.digits ?? null,
+        },
+      ];
+    })
   );
 }
 
@@ -342,7 +449,10 @@ function rangesFor(series, starts, n, manualValues = {}) {
 
 function finish({ env, templateId, series, starts, n, rows, autoNames, attempts, checked, collisions, manualValues, manualCollisions }) {
   const ranges = rangesFor(series, starts, n, manualValues);
-  for (const name of autoNames) setCursor(env, templateId, name, starts[name] + BigInt(n));
+  for (const name of autoNames) {
+    setCursor(env, templateId, name, starts[name] + BigInt(n));
+    recordHighWater(env, templateId, name, starts[name] + BigInt(n) - 1n);
+  }
   return { rows, attempts, checked, collisions, manualCollisions, ranges };
 }
 

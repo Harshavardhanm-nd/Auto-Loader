@@ -49,3 +49,26 @@ export function partitionHandoff(rows, model) {
     shipmentUpdate: rows.filter((row) => !stillOwes(row)),
   };
 }
+
+/**
+ * Split the DEAD tab's ticked devices by what can be done to them.
+ *
+ * The tab lists both devices on their way to Dead (non-repairable at the repair partner) and
+ * devices already there (IDMS 9). The first can be marked dead; only the second can be undone.
+ * Offering Mark Dead over an already-dead device, as the tab once did for any selection, does
+ * nothing useful; offering Undo Dead over one that is not provably dead would move a live
+ * device back to New. So IDMS 9 is required, exactly — an unknown status is never undone.
+ *
+ * @param {Array<{deviceId: string, idmsStatus: unknown}>} rows  the DEAD tab's rows
+ * @param {Set<string>} selectedIds
+ * @returns {{undoDead: object[], markDead: object[]}}
+ */
+export function partitionDeadSelection(rows, selectedIds) {
+  const undoDead = [];
+  const markDead = [];
+  for (const row of rows ?? []) {
+    if (!selectedIds.has(row.deviceId)) continue;
+    (String(row.idmsStatus) === '9' ? undoDead : markDead).push(row);
+  }
+  return { undoDead, markDead };
+}

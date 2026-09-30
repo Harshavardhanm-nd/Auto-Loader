@@ -204,6 +204,12 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
             <p className="prose small">
               Held in <code>data/counters.json</code>, keyed <code>env:templateId:series</code>.
             </p>
+            <p className="prose small">
+              <em>Highest minted</em> is the highest id this app has ever minted for the series in
+              this environment. Next never starts at or below it, and Set to… and Reset cannot move
+              a counter under it: a sandbox refresh empties Salesforce but not IDMS, so those ids
+              still exist downstream and reusing one fails the sync with "asset already exists".
+            </p>
           </Explainer>
           <div className="table-wrap">
             <table>
@@ -213,6 +219,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                   <th>Series</th>
                   <th>Type</th>
                   <th>Next</th>
+                  <th>Highest minted</th>
                   <th>Set to…</th>
                   <th>Manual ids</th>
                 </tr>
@@ -232,6 +239,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                           {info.digits ? ` ${info.digits}d` : ''}
                         </td>
                         <td className="mono">{info.next}</td>
+                        <td className="mono small muted">{info.highWater ?? '—'}</td>
                         <td>
                           {info.type === 'numeric' ? (
                             <span style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
@@ -286,7 +294,7 @@ export default function IdsPage({ runId, run, refreshRun, goto, onError }) {
                       const done = values.length >= total;
                       rows.push(
                         <tr key={`${key}:manual`}>
-                          <td colSpan={6}>
+                          <td colSpan={7}>
                             <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
                               <input
                                 className="mono small"

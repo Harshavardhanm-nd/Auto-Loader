@@ -86,8 +86,8 @@ export const api = {
   allocate: (runId, manualSeries) => post(`/api/runs/${runId}/allocate`, { manualSeries }),
   checkIds: (runId) => post(`/api/runs/${runId}/check-ids`, {}),
 
-  generate: (runId, operation, deviceIds) =>
-    post(`/api/runs/${runId}/generate`, { operation, ...(deviceIds ? { deviceIds } : {}) }),
+  generate: (runId, operation, deviceIds, extra = {}) =>
+    post(`/api/runs/${runId}/generate`, { operation, ...(deviceIds ? { deviceIds } : {}), ...extra }),
   operations: (runId) => get(`/api/runs/${runId}/operations`),
   preview: (runId, key, maxBytes) =>
     get(`/api/runs/${runId}/preview/${encodeURIComponent(key)}?${q({ maxBytes })}`),

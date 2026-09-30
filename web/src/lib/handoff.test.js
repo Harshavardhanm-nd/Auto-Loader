@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { partitionHandoff } from './handoff.js';
+import { partitionHandoff, partitionDeadSelection } from './handoff.js';
 
 /** The stage-step model as `/api/catalog/lifecycle` reports it. */
 const MODEL = {
@@ -72,5 +72,28 @@ describe('hand-off partition', () => {
     // The caller reads deviceId, accessories and syncStatus off these to build the CSV request.
     const original = row('1', 'driveri');
     assert.equal(partitionHandoff([original], MODEL).shipmentUpdate[0], original);
+  });
+});
+
+describe('DEAD tab selection', () => {
+  const dead = (deviceId, idmsStatus) => ({ deviceId, idmsStatus });
+  const rows = [dead('a', 9), dead('b', '9'), dead('c', 7), dead('d', null)];
+
+  test('a device already at IDMS 9 is offered Undo Dead, the rest Mark Dead', () => {
+    const { undoDead, markDead } = partitionDeadSelection(rows, new Set(['a', 'b', 'c', 'd']));
+    assert.deepEqual(ids(undoDead), ['a', 'b']);
+    assert.deepEqual(ids(markDead), ['c', 'd']);
+  });
+
+  test('only ticked devices are partitioned', () => {
+    const { undoDead, markDead } = partitionDeadSelection(rows, new Set(['a']));
+    assert.deepEqual(ids(undoDead), ['a']);
+    assert.deepEqual(ids(markDead), []);
+  });
+
+  test('an unknown IDMS status is never offered Undo Dead', () => {
+    // Undoing a device that is not provably dead would move a live device back to New.
+    const { undoDead } = partitionDeadSelection([dead('x', undefined), dead('y', 'unmapped')], new Set(['x', 'y']));
+    assert.deepEqual(ids(undoDead), []);
   });
 });

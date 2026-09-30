@@ -70,12 +70,23 @@ describe('every environment is internally consistent', () => {
         else seen.set(to, [operation]);
       }
 
+      // Every legitimate sharing, declared. Anything else sharing an address is a copy-paste
+      // until someone adds it here on purpose.
+      //  - initial load / update load / data update: one "Asset Shipped From MFR" handler; the
+      //    device already existing is what makes a file an update. Staging has no updateLoad.
+      //  - faulty returned / RMA returned: one "Returned Faulty Asset At MFR" handler, chosen
+      //    2026-09-30 for staging to match testing. Unproven until an RMA Returned send is polled
+      //    to IDMS 7 — see the staging rmaReturned $comment.
+      const BUNDLES = [
+        ['dataUpdate', 'initialLoad', 'updateLoad'],
+        ['dataUpdate', 'initialLoad'],
+        ['faultyReturned', 'rmaReturned'],
+      ].map((b) => b.join(','));
+
       for (const [address, operations] of seen) {
         if (operations.length === 1) continue;
-        // The only legitimate sharing: testing's "Initial Load & Update Load DL".
-        assert.deepEqual(
-          operations.sort(),
-          ['initialLoad', 'updateLoad'],
+        assert.ok(
+          BUNDLES.includes([...operations].sort().join(',')),
           `${name}: ${address} is shared by ${operations.join(', ')} — is that intended?`
         );
       }
@@ -221,6 +232,8 @@ describe('template routing', () => {
 
     // These are known routes with no CSV format yet. If a sheet arrives for one, this list
     // shrinks — the test documents the gap rather than asserting it stays.
-    assert.deepEqual(awaiting.sort(), ['deviceDead', 'faultyReturned', 'nonRepairable', 'undoDead']);
+    // updateLoad joined when its Octo sheet was re-declared as dataUpdate; deviceDead and
+    // undoDead left when their sheets arrived (undo-dead.json, 2026-09-30).
+    assert.deepEqual(awaiting.sort(), ['faultyReturned', 'nonRepairable', 'updateLoad']);
   });
 });

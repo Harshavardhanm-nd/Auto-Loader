@@ -1,0 +1,54 @@
+{
+  "id": "undo-dead",
+  "label": "Undo Dead — any family",
+  "family": "shared",
+  "familyLabel": "Any family",
+  "kind": "operation",
+  "operation": "undoDead",
+  "status": "verified",
+  "sourceTemplate": "UndoDead.csv",
+  "bytes": {
+    "bom": true,
+    "lineEnding": "\r\n",
+    "trailingNewline": false
+  },
+  "filenamePattern": "Undo_Dead_{family}_{trackingId}.csv",
+  "series": {},
+  "columns": [
+    {
+      "name": "device_id",
+      "source": "existing.device_id",
+      "required": true
+    },
+    {
+      "name": "Device Type",
+      "source": "existing.device_type",
+      "required": true
+    },
+    {
+      "name": "UndoDead Reason",
+      "source": "field.undo_dead_reason",
+      "required": true,
+      "allowedValues": [
+        "Lost & Found at Inventory",
+        "Requested by CSM",
+        "Requested by Customer",
+        "Requested by VVDN"
+      ]
+    },
+    {
+      "name": "AccountId",
+      "source": "existing.account_id",
+      "required": true
+    }
+  ],
+  "reusesExistingDevices": true,
+  "notes": [
+    "Byte-checked against UndoDead.csv (supplied 2026-09-30): BOM, CRLF, no trailing newline.",
+    "Applicable to devices at IDMS 9 (Dead). Moves them to IDMS 1 (New) — see the 9 -> 1 transition in config/lifecycle.json, which is itself marked uncertain.",
+    "The sheet has no Productcode column, although the request that introduced this format listed one. The sheet wins: it is what the parser accepted.",
+    "Device Type comes from the group's family via resolveDeadDeviceType, exactly as on the Dead sheet — same six-value vocabulary.",
+    "AccountId is the customer the device belonged to before its return — Asset.Prior_to_RMA_AccountId__c, read at generate time — NOT Asset.AccountId, which on a returned or dead device is the Install Check holding account. A device whose prior account is empty, or equal to its current account, is refused rather than written. See server/services/undo-dead-account.js.",
+    "UndoDead Reason has no default: the operator picks one per file. Only 'Lost & Found at Inventory' has been seen in an accepted sheet; the capitalisation of the other three is as supplied, unconfirmed against the parser."
+  ]
+}
