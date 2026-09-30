@@ -130,6 +130,14 @@ export function buildCsv(template, { trackingId, fields = {}, rows, now = new Da
           `Template "${template.id}" row ${index + 1}: required column "${column.name}" is empty`
         );
       }
+      // A closed vocabulary the parser matches on — Undo Dead's four reasons. Checked exactly,
+      // case included: a near-miss is a value the far end does not recognise, not a typo to fix.
+      if (column.allowedValues && !column.allowedValues.includes(asString)) {
+        throw new Error(
+          `Template "${template.id}" row ${index + 1}: column "${column.name}" must be one of ` +
+            `${column.allowedValues.map((v) => `"${v}"`).join(', ')} (got "${asString}")`
+        );
+      }
       if (column.noSpaces && /\s/.test(asString)) {
         throw new Error(
           `Template "${template.id}" row ${index + 1}: column "${column.name}" must not contain spaces (got "${asString}")`
@@ -232,14 +240,41 @@ export function planExistingRows(deviceIds, line = {}) {
 }
 
 /**
- * Plan for the Dead template: one row per device, carrying the device type resolved from
- * the Asset's Device_Category__c at generate time.
+ * Plan for the Dead template: one row per device, carrying the device type resolved from the
+ * group's family at generate time (`resolveDeadDeviceType` — not the Asset's Device_Category__c,
+ * which holds region codes).
  *
  * @param {Array<{deviceId: string, deviceType: string}>} deviceEntries
  */
 export function planDeadRows(deviceEntries) {
   return deviceEntries.map(({ deviceId, deviceType }) => ({
     existing: { device_id: String(deviceId), device_type: String(deviceType) },
+    line: {},
+  }));
+}
+
+/**
+ * Plan for the Undo Dead template: the Dead sheet's two columns plus the account the device
+ * returns to — its pre-return customer, chosen by `undoDeadAccount` before this is called.
+ *
+ * A missing account is still refused here, every such device named, as a last gate: written
+ * blank, the org would reject the row or attach the device to no account, and neither is
+ * visible from here.
+ *
+ * @param {Array<{deviceId: string, deviceType: string, accountId: string|null}>} deviceEntries
+ */
+export function planUndoDeadRows(deviceEntries) {
+  const missing = deviceEntries
+    .filter(({ accountId }) => !String(accountId ?? '').trim())
+    .map(({ deviceId }) => String(deviceId));
+  if (missing.length) {
+    throw new Error(
+      `No account to return ${missing.join(', ')} to, so no Undo Dead row can be written for ` +
+        'them. Check those devices in Salesforce, or leave them out of this file.'
+    );
+  }
+  return deviceEntries.map(({ deviceId, deviceType, accountId }) => ({
+    existing: { device_id: String(deviceId), device_type: String(deviceType), account_id: String(accountId).trim() },
     line: {},
   }));
 }

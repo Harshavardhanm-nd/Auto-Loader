@@ -232,6 +232,8 @@ describe('template routing', () => {
 
     // These are known routes with no CSV format yet. If a sheet arrives for one, this list
     // shrinks — the test documents the gap rather than asserting it stays.
-    assert.deepEqual(awaiting.sort(), ['deviceDead', 'faultyReturned', 'nonRepairable', 'undoDead']);
+    // updateLoad joined when its Octo sheet was re-declared as dataUpdate; deviceDead and
+    // undoDead left when their sheets arrived (undo-dead.json, 2026-09-30).
+    assert.deepEqual(awaiting.sort(), ['faultyReturned', 'nonRepairable', 'updateLoad']);
   });
 });

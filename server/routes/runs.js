@@ -23,12 +23,21 @@ import {
   setCursor,
   primarySeriesOf,
 } from '../services/id-generator.js';
-import { buildCsv, planGeneratedRows, planWizardRows, planExistingRows, planDeadRows } from '../services/csv-builder.js';
+import {
+  buildCsv,
+  planGeneratedRows,
+  planWizardRows,
+  planExistingRows,
+  planDeadRows,
+  planUndoDeadRows,
+} from '../services/csv-builder.js';
+import { undoDeadAccount } from '../services/undo-dead-account.js';
 import {
   findTakenDeviceIds,
   fetchOrder,
   fetchAssetsByDeviceId,
   fetchAssetsByTrackingId,
+  fetchUndoDeadAccounts,
   tallyRows,
   rescoreSnapshot,
   splitByStagePosition,
@@ -597,6 +606,51 @@ runsRouter.post('/:runId/generate', async (req, res, next) => {
       });
       built.push(saveArtifact(run.runId, artifactKey(operation, SHARED_FAMILY), artifact));
       appendEvent(run.runId, 'files.generated', artifact.filename);
+      const updated = updateRun(run.runId, (r) => { r.status = 'files-generated'; return r; });
+      res.json({ run: updated, artifacts: built.map((a) => artifactPreview(a)), blocked });
+      return;
+    }
+
+    // Undo Dead: the Dead sheet's columns plus the account each device returns to — the customer
+    // it belonged to before its return, read off the Asset now (see undo-dead-account.js). One reason for the whole file, chosen by
+    // the operator; it is checked against the descriptor's list by `buildCsv`.
+    if (operation === 'undoDead') {
+      const template = findTemplate(SHARED_FAMILY, operation);
+      const allIds = runDeviceIds(run);
+      const ids = deviceIdsFilter ? allIds.filter((id) => deviceIdsFilter.has(String(id))) : allIds;
+      if (!ids.length) throw new Error('Select devices at IDMS 9 (Dead) before generating the Undo Dead CSV.');
+
+      const reason = String(req.body?.undoDeadReason ?? '').trim();
+      if (!reason) throw new Error('Pick an Undo Dead reason — there is no default, since it is recorded on the device.');
+
+      // The customer it came back from, not the Install Check account it is parked on now.
+      const accounts = await fetchUndoDeadAccounts(run.env, ids);
+      const resolved = new Map(ids.map((id) => [String(id), undoDeadAccount(accounts.get(String(id)) ?? null)]));
+      const problems = [...resolved].filter(([, r]) => r.problem).map(([id, r]) => `${id}: ${r.problem}`);
+      if (problems.length) {
+        throw new Error(
+          `Cannot write Undo Dead for ${problems.length} device(s) — the account each should return ` +
+            `to is not known:\n${problems.join('\n')}\nLeave them out of this file, or correct ` +
+            'Prior_to_RMA_AccountId__c in Salesforce first.'
+        );
+      }
+
+      const idToFamily = deviceFamilyMap(run);
+      const familyLabel = run.groups[0]?.family?.toUpperCase() ?? 'SHARED';
+      const artifact = buildCsv(template, {
+        trackingId: run.trackingId,
+        fields: { undo_dead_reason: reason },
+        rows: planUndoDeadRows(
+          ids.map((id) => ({
+            deviceId: id,
+            deviceType: resolveDeadDeviceType(idToFamily.get(String(id))),
+            accountId: resolved.get(String(id)).accountId,
+          }))
+        ),
+        family: familyLabel,
+      });
+      built.push(saveArtifact(run.runId, artifactKey(operation, SHARED_FAMILY), artifact));
+      appendEvent(run.runId, 'files.generated', `${artifact.filename} (${reason})`);
       const updated = updateRun(run.runId, (r) => { r.status = 'files-generated'; return r; });
       res.json({ run: updated, artifacts: built.map((a) => artifactPreview(a)), blocked });
       return;

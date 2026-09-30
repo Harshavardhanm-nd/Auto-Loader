@@ -289,6 +289,9 @@ describe('generation invariants', () => {
     for (const template of loadTemplates()) {
       for (const column of template.columns) {
         if (!column.source.startsWith('field.')) continue;
+        // A closed vocabulary is the operator's choice per file (Undo Dead's reason), and
+        // deliberately has no default: `buildCsv` refuses the file until one is picked.
+        if (column.allowedValues) continue;
         const key = column.source.slice('field.'.length);
         assert.ok(
           template.defaults && key in template.defaults,
