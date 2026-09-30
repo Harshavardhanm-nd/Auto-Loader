@@ -201,8 +201,8 @@
             "body": "Please find the attached Data Update CSV."
           },
           "rmaReturned": {
-            "$comment": "NOT supplied for Staging. Add the Apex email service address after sandbox refresh.",
-            "to": "REPLACE_ME_no_rma_returned_DL_supplied_for_staging",
+            "$comment": "Deliberately the same address as faultyReturned (Returned-Faulty-Asset-At-MFR-Staging), as in testing — chosen 2026-09-30, no separate RMA Returned DL exists for staging. Unproven: no RMA Returned had been sent from this app in either env when this was set. Poll the first send; if the device does not reach IDMS 7 (Returned RMA), this pairing is wrong.",
+            "to": "assets_returned_to_vvdn@q-9td09pqrj6whegapwaqxg0btszk8mvzx7nni6p19gtpt5v6l.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
             "subject": "RMA Returned",
             "body": "Please find the attached RMA Returned CSV."
           }
