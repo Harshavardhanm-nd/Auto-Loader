@@ -14,7 +14,15 @@ import {
   archiveCurrentSend,
   sendsForKey,
 } from '../services/run-store.js';
-import { allocateSeries, describeCursors, resetCursor, setCursor, primarySeriesOf } from '../services/id-generator.js';
+import {
+  allocateSeries,
+  cursorMoveRefusal,
+  describeCursors,
+  highWaterMark,
+  resetCursor,
+  setCursor,
+  primarySeriesOf,
+} from '../services/id-generator.js';
 import { buildCsv, planGeneratedRows, planWizardRows, planExistingRows, planDeadRows } from '../services/csv-builder.js';
 import {
   findTakenDeviceIds,
@@ -331,6 +339,15 @@ runsRouter.post('/:runId/cursors/set', (req, res, next) => {
     const def = template.series?.[seriesName];
     if (!def) throw Object.assign(new Error(`Unknown series "${seriesName}" on "${templateId}"`), { status: 400 });
     if (def.digits && !def.unbounded && n > BigInt(10 ** def.digits - 1)) throw Object.assign(new Error(`Value exceeds ${def.digits}-digit limit`), { status: 400 });
+    // Forward is always allowed; onto an id already minted is not. A sandbox refresh empties
+    // Salesforce but not IDMS, so the collision check cannot catch the reuse — this is the
+    // only thing that can. See `highWaterMark` in id-generator.js.
+    const refusal = cursorMoveRefusal({
+      value: n,
+      highWater: highWaterMark(run.env, templateId, seriesName),
+      env: run.env,
+    });
+    if (refusal) throw Object.assign(new Error(refusal), { status: 400 });
     setCursor(run.env, templateId, seriesName, n);
     res.json({ set: true, value: n.toString() });
   } catch (err) {

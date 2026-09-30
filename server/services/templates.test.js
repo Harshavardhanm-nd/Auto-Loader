@@ -9,7 +9,7 @@
  * suite still runs on a machine that only has this repo.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +19,7 @@ import { buildCsv, planGeneratedRows, planExistingRows, formatDate } from './csv
 import { allocateSeries, primarySeriesOf, validateRows, resetCursor } from './id-generator.js';
 import { duplicateSendReason } from './validator.js';
 import { loadTemplates, getTemplate } from '../lib/config.js';
+import { COUNTERS_FILE } from '../lib/paths.js';
 import { hasBom, lineEndingStats, assertCsvBytes, formatSerialNumberForCsv } from '../lib/bytes.js';
 
 const DL_DIR = process.env.DL_TEMPLATE_DIR || path.join(os.homedir(), 'BSG', 'DL Template');
@@ -319,13 +320,26 @@ describe('generation invariants', () => {
 });
 
 describe('id allocation', () => {
-  // Counters persist to disk by design, so each test clears its own before running —
-  // otherwise a second `npm test` would start where the first left off.
+  // Counters persist to data/counters.json by design, and so does the high-water mark — which
+  // Reset deliberately cannot lower, so resetting no longer gives a test a clean slate. Each
+  // process therefore allocates under environments of its own, and removes every entry it
+  // wrote when it finishes, so repeated `npm test` runs neither interfere nor accumulate.
+  const RUN = `${process.pid}-${Date.now()}`;
+  const ALLOC_ENV = `test-alloc-${RUN}`;
+  const EXHAUST_ENV = `exhaust-test-${RUN}`;
+  after(() => {
+    const counters = JSON.parse(fs.readFileSync(COUNTERS_FILE, 'utf8'));
+    const ours = (key) => key.startsWith(`${ALLOC_ENV}:`) || key.startsWith(`${EXHAUST_ENV}:`);
+    for (const key of Object.keys(counters)) if (ours(key)) delete counters[key];
+    for (const key of Object.keys(counters.highWater ?? {})) if (ours(key)) delete counters.highWater[key];
+    fs.writeFileSync(COUNTERS_FILE, JSON.stringify(counters, null, 2) + '\n');
+  });
+
   const fresh = (templateId, series) => {
     for (const [name, def] of Object.entries(series)) {
-      resetCursor('test-alloc', templateId, name, def);
+      resetCursor(ALLOC_ENV, templateId, name, def);
     }
-    return { env: 'test-alloc', templateId, series };
+    return { env: ALLOC_ENV, templateId, series };
   };
 
   test('allocates one contiguous block per declared series', async () => {
@@ -399,7 +413,7 @@ describe('id allocation', () => {
 
     const attempt = () =>
       allocateSeries({
-        env: 'exhaust-test',
+        env: EXHAUST_ENV,
         templateId: 'exhaust-test',
         series,
         count: 2,
@@ -409,7 +423,7 @@ describe('id allocation', () => {
         },
       });
 
-    for (const [name, def] of Object.entries(series)) resetCursor('exhaust-test', 'exhaust-test', name, def);
+    for (const [name, def] of Object.entries(series)) resetCursor(EXHAUST_ENV, 'exhaust-test', name, def);
 
     await assert.rejects(attempt(), /Could not find 2 free ids/);
     const firstRun = [...windows];
@@ -435,7 +449,7 @@ describe('id allocation', () => {
 
   test('templates with no series still yield rows', async () => {
     const result = await allocateSeries({
-      env: 'test-alloc',
+      env: ALLOC_ENV,
       templateId: 'received-load',
       series: {},
       count: 3,
