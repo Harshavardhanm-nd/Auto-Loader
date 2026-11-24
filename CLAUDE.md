@@ -24,8 +24,9 @@ job. Neither will announce itself, so know about them before you change anything
    header/byte checks but no row-level round-trip. Changes to `csv-builder.js` reaching *those*
    descriptors are unverified. The other nine are covered — `rowsFromSamples` was repaired on
    2026-08-27. See "Test state".
-2. **`faultyReturned` and `rmaReturned` route to the identical testing mailbox**, and no test catches
-   it because the assertion that would throws earlier. See "Routing".
+2. **`faultyReturned` and `rmaReturned` route to the identical mailbox in both environments** — now a
+   declared bundle in `config.test.js`, but unproven until an RMA Returned send is polled to IDMS 7.
+   See "Routing".
 
 A third guard was on this list too: the ahead/behind reasoning that stops a device being reported as
 loaded before an operation has actually reached it. A `dataUpdate` self-loop in
@@ -72,6 +73,7 @@ node --test server/services/position.test.js          # 9 tests, 9 pass / 0 fail
 node --test server/services/poller-result.test.js     # 12 tests, 12 pass / 0 fail — settle/verdict scoring, stale-verdict reconcile
 node --test server/routes/dead-device-type.test.js    # 5 tests, 5 pass / 0 fail — every family resolves to a DEAD_DEVICE_TYPES value
 node --test server/services/accessory-enrichment.test.js # 9 tests, 9 pass / 0 fail — accessory serial gathering, row decoration
+node --test server/services/id-floors.test.js      # 11 tests, 11 pass / 0 fail — committed floors, org-highest band, fresh-machine start
 node --test --test-name-pattern "byte contract" server/services/templates.test.js
 ```
 
@@ -539,30 +541,32 @@ sending **for that pipeline only** — an unconfirmed address is safe to leave i
 family-specific mailbox only when it differs from the shared one.
 
 Note `initialLoad` and `updateLoad` share testing's mailbox by design (the DL is named "Initial
-Load & Update Load"), and staging's `asset_markdead_` / `asset_markundodead_` differ by one word.
+Load & Update Load"), and staging's `Asset-Mark-Dead-Staging` / `Asset-Mark-UndoDead-Staging` differ
+by one word.
 `server/lib/config.test.js` asserts these cannot be confused in either direction.
 
 **`dataUpdate` now shares `initialLoad`'s mailbox in both environments.** It was `REPLACE_ME` in
 both until the Octo work; it is now `Asset-Shipped-From-MFR-Testing` in testing and
-`assets_shipped_from_vvdn` in staging. That makes three operations on one testing address
+`Asset-Shipped-From-MFR-Staging` in staging. That makes three operations on one testing address
 (`initialLoad`, `updateLoad`, `dataUpdate`) and is what two of the `config.test.js` failures are
 about — the test's allowlist still expects two.
 
-**`faultyReturned` and `rmaReturned` are byte-identical addresses in testing** — both are
-`assets_returned_to_vvdn@b1m859pz…apex.sandbox.salesforce.com`, same local part *and* same host.
-This is not currently asserted anywhere: the "no two operations share an address" test throws on the
-`Asset-Shipped-From-MFR-Testing` group first and never reaches this one. Either they are genuinely
-one Apex handler and the pairing should be declared deliberate, or one of the two addresses is a
-copy-paste and a Faulty Returned sheet is landing in the RMA Returned handler. **Resolve this before
-sending either operation** — it is exactly the class of error the local-part matching exists to
-catch, and nothing in the suite is guarding it today.
-
-`rmaReturned` is configured in testing only; staging carries
-`REPLACE_ME_no_rma_returned_DL_supplied_for_staging`, which blocks that one pipeline and nothing
-else. Testing's `deviceDead` was also re-pointed, from `assets_non_repairable_at_repair_center` to
-`asset_markdead_emailservice`, so both environments now agree on the local part for marking a device
-dead — the "confirm they are the same operation" caveat that used to sit on this entry is resolved.
-Its label changed from "Mark dead" to `DEAD`.
+**Both environments send every operation to a `@netradyne.com` DL, never to an Apex address.**
+Each DL's member is the Apex email service for that operation, so the DL survives a sandbox refresh
+where the Apex address does not — the 2026-11-20 refresh moved every testing service to host
+`vd-hx6sr2ad.usa666s`. Testing switched on 2026-11-20, staging on 2026-11-24 (its members are on
+host `ib-1mvdeai.usa1248s`). **Do not derive one environment's DL names from the other's** — they
+are not a pattern: testing's shipment update is `Asset_Shipment_Update_Testing`, staging's is
+`Asset-Shipment-Update-From-MFR-Staging`; testing's dead DL is `Assets_MarkDead_Testing`,
+staging's `Asset-Mark-Dead-Staging`. The mark-dead and undo-dead DLs in both environments were
+supplied as *new DL creations*: if a send bounces, the DL has not been created yet. The
+mark-dead/undo-dead and initial/shipment confusion tests run in both environments; the old
+wrong-Apex-host test was removed when staging stopped addressing Apex hosts.
+`faultyReturned`/`rmaReturned` share `Returned-Faulty-Asset-At-MFR-<Env>` — a declared bundle in
+both environments (staging since `8bac2fa`). Staging's `updateLoad` is still `REPLACE_ME`: no DL
+was supplied, and it has no template anyway. Not routed, because no operation exists for them: the
+AMZ in-transit and received DLs, QA Reject, and testing's Out-of-Warranty Repair. `deviceDead`'s
+label changed from "Mark dead" to `DEAD`.
 
 ### The constant columns live in `config/profiles.json`
 
@@ -894,6 +898,16 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
   a random reroll. On collision the cursor advances past the hit — forward progress only. Numeric
   series refuse to overflow their declared digit width. `POST /:id/cursors/set` is the one
   sanctioned way to move a cursor by hand, and it enforces the same digit ceiling.
+- **A fresh machine starts where the team left off, not at `sampleStart`.** `data/` is not in git,
+  so counters and run history are per machine. Two shared sources close that gap, both folded into
+  the start position: **`config/id-floors.json`** (committed, keyed `env → "<family>:<series>"`) is
+  the lowest id a product type may mint — a third input to `highWaterMark`, so the allocator, the
+  Ids screen and the "Set to…" refusal all respect it; and at allocation, **`findHighestIdInBand`**
+  reads the highest id the org holds in the series' band (same length, same leading half of the
+  digits — which keeps Octo's `12507…` clear of the DMS cameras at `12524…`) and starts past it.
+  Salesforce cannot see IDMS-only devices, which is why the floor file exists at all: raise a value
+  and commit it whenever a series moves to a new range. `id-floors.test.js` fails if any minted
+  series lacks a floor in either environment.
 - **Every `sampleStart` is an id that is already loaded.** It was copied from a sheet the parser
   accepted, so a fresh counter always opens on a collision — usually against the whole batch that
   sheet belonged to (the DHUB start `4011301001` sits under 37 consecutive live assets). The
@@ -960,8 +974,8 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
   *within* one logical format. Don't unify them.
 - **`escapeField` refuses** commas/quotes/newlines rather than quoting — no column in any format
   legitimately contains them, so it's caller data corruption.
-- **Mailbox matching is on the local part**, not the domain. Every testing address is
-  `@netradyne.com` and staging's are all Apex email services on one host suffix.
+- **Mailbox matching is on the local part**, not the domain. Every address in both
+  environments is a `@netradyne.com` DL, so the domain tells two operations apart in neither.
 - **One send in flight per `"<operation>:<family>"`, enforced by a claim, not by a check.**
   `claimSend`/`releaseSend` (`run-store.js`) take exclusive hold of the pipeline *before*
   `deliver()`; the route releases in a `finally`, and a claim abandoned by a crash expires after

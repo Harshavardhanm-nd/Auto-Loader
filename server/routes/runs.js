@@ -34,6 +34,7 @@ import {
 import { undoDeadAccount } from '../services/undo-dead-account.js';
 import {
   findTakenDeviceIds,
+  findHighestIdInBand,
   fetchOrder,
   fetchAssetsByDeviceId,
   fetchAssetsByTrackingId,
@@ -395,6 +396,9 @@ runsRouter.post('/:runId/allocate', async (req, res, next) => {
     const run = getRun(req.params.runId);
     const connected = Boolean(readSession(run.env));
     const checkTaken = connected ? (ids) => findTakenDeviceIds(run.env, ids) : null;
+    // Start each series past the highest id the org already holds in its band, so a machine with
+    // no counters or history of its own does not open on devices someone else loaded.
+    const orgHighest = connected ? (name, start) => findHighestIdInBand(run.env, name, start) : null;
     // Per-family, per-series operator-supplied ids — one value per unit, in line order,
     // covering the whole group the way a minted block does. A series absent here is minted
     // as before; naming one here opts only that series out of the counter.
@@ -438,6 +442,7 @@ runsRouter.post('/:runId/allocate', async (req, res, next) => {
         series: template.series,
         count: total,
         checkTaken,
+        orgHighest,
         manualValues: groupManualValues,
       });
 
@@ -460,6 +465,7 @@ runsRouter.post('/:runId/allocate', async (req, res, next) => {
         manualCollisions: allocation.manualCollisions,
         manualSeries: Object.keys(groupManualValues),
         ranges: allocation.ranges,
+        orgHighest: allocation.orgHighest,
       });
     }
 

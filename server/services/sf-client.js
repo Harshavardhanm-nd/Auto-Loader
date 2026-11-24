@@ -515,6 +515,66 @@ export async function fetchRecentOrders(env, { limit = 25 } = {}) {
  */
 export const COLLISION_FIELDS = ['Name', 'SIM_Serial__c', 'Device_IMEI__c', 'Wifi_Mac__c'];
 
+/** The Asset field each minted series lands in. `collision-fields.test.js` fails on a series
+ *  missing here, so a new series cannot be allocated blind. */
+export const SERIES_FIELD = {
+  device_id: 'Name',
+  driveri_hub_id: 'Name',
+  serial_number: 'Name',
+  sim_serial: 'SIM_Serial__c',
+  device_imei: 'Device_IMEI__c',
+  mac_id: 'Wifi_Mac__c',
+  // Octo's accessories become Assets in their own right, keyed by Name.
+  wired_speaker_serial: 'Name',
+  native_cam_serial: 'Name',
+};
+
+/**
+ * The query for the highest id in `start`'s band: same length, same leading half of its digits.
+ *
+ * The band is what keeps another product's ids out. Octo's device ids start `12507…` while 15
+ * DMS cameras in testing sit at `12524…` — same length, close in number, nothing to do with Octo.
+ * Half the digits separates those, and Octo's 8-digit camera serials (`7000…`) from two KFOB
+ * beacons at `703…`/`701…`. `LIKE` with `_` pins the length; the numeric filter is applied after.
+ */
+export function highestInBandSoql(field, start) {
+  if (!COLLISION_FIELDS.includes(field)) throw new Error(`"${field}" is not an id field`);
+  const digits = String(start);
+  if (!/^\d+$/.test(digits)) throw new Error(`"${start}" is not a numeric id`);
+  const prefix = digits.slice(0, Math.ceil(digits.length / 2));
+  const pattern = prefix + '_'.repeat(digits.length - prefix.length);
+  return `SELECT ${field} FROM Asset WHERE ${field} LIKE '${pattern}' ORDER BY ${field} DESC LIMIT 2000`;
+}
+
+/** Highest all-digit value of `field` among the records, of exactly `width` digits; or null. */
+export function highestNumeric(records, field, width) {
+  let max = null;
+  for (const record of records ?? []) {
+    const value = String(record?.[field] ?? '');
+    if (value.length !== width || !/^\d+$/.test(value)) continue;
+    const n = BigInt(value);
+    if (max === null || n > max) max = n;
+  }
+  return max;
+}
+
+/**
+ * The highest id the org already holds in the band a series is about to allocate from.
+ *
+ * This is what lets a machine that has never run this app start past devices someone else loaded:
+ * its own counters and run history are empty, and the collision check only steps over ids one
+ * probe span at a time. It reads Salesforce, so it cannot see a device that exists only in IDMS —
+ * `config/id-floors.json` is what covers that.
+ *
+ * @returns {Promise<bigint|null>}
+ */
+export async function findHighestIdInBand(env, seriesName, start) {
+  const field = SERIES_FIELD[seriesName];
+  if (!field) throw new Error(`Series "${seriesName}" has no Asset field mapped in SERIES_FIELD`);
+  const records = await query(env, highestInBandSoql(field, start));
+  return highestNumeric(records, field, String(start).length);
+}
+
 /**
  * The URL length Salesforce will accept on a GET query, with margin.
  *
