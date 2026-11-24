@@ -45,12 +45,12 @@
     "deviceDead": {
       "label": "DEAD",
       "needsMail": true,
-      "$comment": "Mailbox known in both envs, CSV format not yet. NOTE: the two orgs use different local parts for this — testing's is assets_non_repairable_at_repair_center, staging's is asset_markdead_emailservice. Confirm they are the same operation."
+      "$comment": "Testing sends to the Assets_MarkDead_Testing DL (member: asset_markdead_emailservice); staging addresses that Apex service directly."
     },
     "undoDead": {
       "label": "Undo mark dead",
       "needsMail": true,
-      "$comment": "Staging only — no testing equivalent was supplied. Mailbox known, CSV format not yet."
+      "$comment": "Testing sends to the Assets_MarkUndoDead_Testing DL (member: asset_markundodead_emailservice); staging addresses that Apex service directly."
     }
   },
   "environments": {
@@ -58,67 +58,71 @@
       "label": "Testing",
       "verified": true,
       "salesforce": {
-        "loginUrl": "https://netradyne--testing.sandbox.my.salesforce.com",
-        "instanceUrl": "https://netradyne--testing.sandbox.my.salesforce.com",
+        "loginUrl": "https://netradyne--test.sandbox.my.salesforce.com",
+        "instanceUrl": "https://netradyne--test.sandbox.my.salesforce.com",
         "ssoLabel": "Netradyne Testing SSO",
         "apiVersion": "v61.0",
-        "sandboxName": "netradyne--testing"
+        "sandboxName": "netradyne--test"
       },
       "distributionLists": {
         "byOperation": {
           "initialLoad": {
+            "$comment": "The Asset-Shipped-From-MFR-Testing DL, whose member is the assets_shipped_from_vvdn Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
             "to": "Asset-Shipped-From-MFR-Testing@netradyne.com",
             "subject": "Initial Load File",
             "body": "Please find the attached updated Initial Load CSV."
           },
           "updateLoad": {
-            "$comment": "Same mailbox as initialLoad — the DL is named 'Initial Load & Update Load'.",
+            "$comment": "Same DL as initialLoad — named 'Initial Load & Update Load'. The Asset-Shipped-From-MFR-Testing DL, whose member is the assets_shipped_from_vvdn Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
             "to": "Asset-Shipped-From-MFR-Testing@netradyne.com",
             "subject": "Update Load File",
             "body": "Please find the attached Update Load CSV."
           },
           "shipmentUpdate": {
+            "$comment": "The Asset_Shipment_Update_Testing DL, whose member is the asset-shipment-update-from-mfr Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
             "to": "Asset_Shipment_Update_Testing@netradyne.com",
             "subject": "Shipment Update",
             "body": "Please find the attached Initial Load CSV for shipment update processing."
           },
           "received": {
+            "$comment": "The Asset-Received-At-3PL-Testing DL, whose member is the assets_received_at_3pl Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
             "to": "Asset-Received-At-3PL-Testing@netradyne.com",
             "subject": "Device Received",
             "body": "Please find the attached Received CSV."
           },
           "nonRepairable": {
+            "$comment": "The Non-Repairable-Asset-At-MFR-Testing DL, whose member is the assets_non_repairable_at_repair_center Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
             "to": "Non-Repairable-Asset-At-MFR-Testing@netradyne.com",
             "subject": "Non-Repairable Asset At MFR",
             "body": "Please find the attached Non-Repairable Asset CSV."
           },
           "faultyReturned": {
-            "$comment": "A Salesforce Apex email service address, not a netradyne.com mailbox. The local part and host are generated per org and CHANGE ON SANDBOX REFRESH — re-copy both after any refresh.",
-            "to": "assets_returned_to_vvdn@b1m859pz5vx757rxiqt4f31z1rhnc8t7jbvprlnyikavjnw8q.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
+            "$comment": "The Returned-Faulty-Asset-At-MFR-Testing DL, whose member is the assets_returned_to_vvdn Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Returned-Faulty-Asset-At-MFR-Testing@netradyne.com",
             "subject": "Faulty Devices Returned",
             "body": "Please find the attached Faulty Devices Returned CSV."
           },
           "deviceDead": {
-            "$comment": "Apex email service address for Testing. Local part and host change on sandbox refresh — re-copy after any refresh.",
-            "to": "asset_markdead_emailservice@4o4gyp7bi100a8h8qmtk65biwnghebg44os7zoq3uijd4t0se.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
+            "$comment": "Supplied 2026-11-20 as a new DL creation — if it bounces, the DL has not been created yet. The Assets_MarkDead_Testing DL, whose member is the asset_markdead_emailservice Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Assets_MarkDead_Testing@netradyne.com",
             "subject": "Device Dead",
             "body": "Please find the attached Device Dead CSV."
           },
           "undoDead": {
-            "$comment": "NOT in the supplied testing DL list — only Staging has an undo-dead service.",
-            "to": "REPLACE_ME_no_undo_dead_DL_supplied_for_testing",
+            "$comment": "Supplied 2026-11-20 as a new DL creation — if it bounces, the DL has not been created yet. Differs from the mark-dead DL only by 'Undo'. The Assets_MarkUndoDead_Testing DL, whose member is the asset_markundodead_emailservice Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Assets_MarkUndoDead_Testing@netradyne.com",
             "subject": "Undo Device Dead",
             "body": "Please find the attached Undo Device Dead CSV."
           },
           "dataUpdate": {
-            "$comment": "Same mailbox as initialLoad — used for Octo data corrections.",
+            "$comment": "Same DL as initialLoad — used for Octo data corrections. The Asset-Shipped-From-MFR-Testing DL, whose member is the assets_shipped_from_vvdn Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
             "to": "Asset-Shipped-From-MFR-Testing@netradyne.com",
             "subject": "Data Update",
             "body": "Please find the attached Data Update CSV."
           },
           "rmaReturned": {
-            "$comment": "Apex email service address for Testing. Local part and host change on sandbox refresh — re-copy after any refresh.",
-            "to": "assets_returned_to_vvdn@b1m859pz5vx757rxiqt4f31z1rhnc8t7jbvprlnyikavjnw8q.u8-cogcbmah.usa656s.apex.sandbox.salesforce.com",
+            "$comment": "Deliberately the same DL as faultyReturned — no separate RMA Returned DL exists. Declared as a bundle in config.test.js. The Returned-Faulty-Asset-At-MFR-Testing DL, whose member is the assets_returned_to_vvdn Apex service. Testing sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Returned-Faulty-Asset-At-MFR-Testing@netradyne.com",
             "subject": "RMA Returned",
             "body": "Please find the attached RMA Returned CSV."
           }

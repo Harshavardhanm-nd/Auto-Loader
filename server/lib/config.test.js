@@ -95,9 +95,15 @@ describe('every environment is internally consistent', () => {
 });
 
 describe('a placeholder blocks only its own pipeline', () => {
-  test('testing can send an initial load while data update is unconfigured', () => {
+  test('testing has no placeholder left — every mail pipeline has a real address', () => {
+    // undoDead was the last one; its DL arrived 2026-11-20. Staging still carries one (below),
+    // which is what exercises the blocking mechanism itself.
+    for (const [operation, meta] of Object.entries(loadOperations())) {
+      if (meta.needsMail === false) continue;
+      const { to } = resolveDistributionList('testing', 'driveri', operation);
+      assert.ok(!to.startsWith('REPLACE_ME'), `testing/${operation} is still a placeholder`);
+    }
     assert.deepEqual(sendBlockers('testing', 'driveri', 'initialLoad'), []);
-    assert.ok(sendBlockers('testing', 'haptic', 'dataUpdate').length > 0);
   });
 
   test('staging can send an initial load while update load is unconfigured', () => {
@@ -125,12 +131,11 @@ describe('a placeholder blocks only its own pipeline', () => {
 
 describe('the mailbox check cannot confuse similar addresses', () => {
   const template = loadTemplates().find((t) => t.family === 'driveri');
-  const environment = getEnvironment('staging');
 
-  const verdict = (operation, recipient) => {
-    const dl = resolveDistributionList('staging', 'driveri', operation);
+  const verdictIn = (envName) => (operation, recipient) => {
+    const dl = resolveDistributionList(envName, 'driveri', operation);
     const checks = validateSendTarget({
-      environment,
+      environment: getEnvironment(envName),
       template,
       dl,
       recipient,
@@ -140,35 +145,42 @@ describe('the mailbox check cannot confuse similar addresses', () => {
     return checks.find((c) => c.id === 'mailbox').status;
   };
 
-  test('mark-dead and undo-mark-dead are not interchangeable', () => {
-    const dead = resolveDistributionList('staging', 'driveri', 'deviceDead').to;
-    const undo = resolveDistributionList('staging', 'driveri', 'undoDead').to;
+  for (const name of ENVIRONMENTS) {
+    const v = verdictIn(name);
+    const to = (operation) => resolveDistributionList(name, 'driveri', operation).to;
 
-    // These differ only by "undo" in the local part — the whole meaning of the operation.
-    assert.notEqual(dead, undo);
-    assert.equal(verdict('deviceDead', dead), 'pass');
-    assert.equal(verdict('deviceDead', undo), 'fail', 'undo-dead must not pass as mark-dead');
-    assert.equal(verdict('undoDead', dead), 'fail', 'mark-dead must not pass as undo-dead');
-  });
+    test(`${name} — mark-dead and undo-mark-dead are not interchangeable`, () => {
+      const dead = to('deviceDead');
+      const undo = to('undoDead');
 
-  test('the initial-load and shipment-update services are not interchangeable', () => {
-    const initial = resolveDistributionList('staging', 'driveri', 'initialLoad').to;
-    const shipment = resolveDistributionList('staging', 'driveri', 'shipmentUpdate').to;
+      // These differ only by "undo" — the whole meaning of the operation.
+      assert.notEqual(dead, undo);
+      assert.equal(v('deviceDead', dead), 'pass');
+      assert.equal(v('deviceDead', undo), 'fail', 'undo-dead must not pass as mark-dead');
+      assert.equal(v('undoDead', dead), 'fail', 'mark-dead must not pass as undo-dead');
+    });
 
-    assert.equal(verdict('initialLoad', initial), 'pass');
-    assert.equal(verdict('initialLoad', shipment), 'fail');
-    assert.equal(verdict('shipmentUpdate', initial), 'fail');
-  });
+    test(`${name} — the initial-load and shipment-update mailboxes are not interchangeable`, () => {
+      const initial = to('initialLoad');
+      const shipment = to('shipmentUpdate');
+
+      assert.equal(v('initialLoad', initial), 'pass');
+      assert.equal(v('initialLoad', shipment), 'fail');
+      assert.equal(v('shipmentUpdate', initial), 'fail');
+    });
+
+  }
 
   test('a right local part on the wrong Apex host is refused', () => {
-    // Apex hosts are per-service. Reusing one service's host with another's local part is the
-    // exact mistake a sandbox refresh invites, since only some addresses get re-copied.
-    const dead = resolveDistributionList('staging', 'driveri', 'deviceDead').to;
-    const received = resolveDistributionList('staging', 'driveri', 'received').to;
-    const frankenstein = `${dead.split('@')[0]}@${received.split('@')[1]}`;
+    // Staging only: testing sends to @netradyne.com DLs, which share one host. Apex hosts are
+    // per-service, and reusing one service's host with another's local part is the exact
+    // mistake a sandbox refresh invites, since only some addresses get re-copied.
+    const to = (operation) => resolveDistributionList('staging', 'driveri', operation).to;
+    const dead = to('deviceDead');
+    const frankenstein = `${dead.split('@')[0]}@${to('received').split('@')[1]}`;
 
     assert.notEqual(frankenstein, dead);
-    assert.equal(verdict('deviceDead', frankenstein), 'fail');
+    assert.equal(verdictIn('staging')('deviceDead', frankenstein), 'fail');
   });
 
   test('testing and staging addresses never cross environments', () => {
@@ -193,26 +205,23 @@ describe('template routing', () => {
     }
   });
 
-  test('the Octo update-load sheet routes as an update load, not a shipment update', () => {
-    const tpl = findTemplate('octo', 'updateLoad');
-    assert.equal(tpl.id, 'octo-update-load');
+  test('the Octo data-update sheet routes to the initial-load mailbox, not shipment update', () => {
+    assert.equal(findTemplate('octo', 'dataUpdate').id, 'octo-data-update');
 
-    // In testing, an update load shares the initial-load mailbox — that is what the
-    // "Initial Load & Update Load DL" name says.
-    const updateTo = resolveDistributionList('testing', 'octo', 'updateLoad').to;
-    const initialTo = resolveDistributionList('testing', 'octo', 'initialLoad').to;
-    const shipmentTo = resolveDistributionList('testing', 'octo', 'shipmentUpdate').to;
-    assert.equal(updateTo, initialTo);
-    assert.notEqual(updateTo, shipmentTo);
+    // A data update shares the "Asset Shipped From MFR" handler with initial load; the device
+    // already existing is what makes the file an update.
+    for (const name of ENVIRONMENTS) {
+      const dataTo = resolveDistributionList(name, 'octo', 'dataUpdate').to;
+      assert.equal(dataTo, resolveDistributionList(name, 'octo', 'initialLoad').to);
+      assert.notEqual(dataTo, resolveDistributionList(name, 'octo', 'shipmentUpdate').to);
+    }
   });
 
-  test('Octo has no shipment-update template, so that combination is refused', () => {
-    // Octo's second operation is an update load. Asking for a shipment update must not silently
-    // fall through to some other family's template.
-    assert.throws(() => {
-      const tpl = findTemplate('octo', 'shipmentUpdate');
-      if (tpl.family !== 'octo') throw new Error(`fell through to ${tpl.id}`);
-    });
+  test('Octo resolves its own shipment-update sheet and refuses update load', () => {
+    // updateLoad has no sheet in any family since octo-update-load was re-declared as
+    // dataUpdate. Asking for it must refuse, not fall through to another family's template.
+    assert.equal(findTemplate('octo', 'shipmentUpdate').id, 'octo-shipment-update');
+    assert.throws(() => findTemplate('octo', 'updateLoad'), /No "updateLoad" template/);
   });
 
   test('received and wizard upload are family-independent', () => {
