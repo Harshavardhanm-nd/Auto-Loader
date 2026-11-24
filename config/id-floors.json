@@ -13,7 +13,9 @@
     "series moves to a new range (as testing DHUB did on 2026-11-20, to 4011600001, after another",
     "loader's IDMS-only hubs rejected two batches). Values only ever go up.",
     "",
-    "Seeded 2026-11-24 from the counters on the machine that had been doing the loads."
+    "Seeded 2026-11-24 from the counters on the machine that had been doing the loads,",
+    "except staging Driveri, raised to 22600500255: 22600500250-254 were loaded there on",
+    "2026-11-02 by someone outside this app's run history."
   ],
   "testing": {
     "dhub:driveri_hub_id": "4011600006",
@@ -33,9 +35,9 @@
   "staging": {
     "dhub:driveri_hub_id": "4011500089",
     "dms:serial_number": "110500038",
-    "driveri:device_id": "22600500169",
-    "driveri:sim_serial": "22600500169",
-    "driveri:device_imei": "22600500169",
+    "driveri:device_id": "22600500255",
+    "driveri:sim_serial": "22600500255",
+    "driveri:device_imei": "22600500255",
     "haptic:serial_number": "150008",
     "octo:device_id": "1250800020",
     "octo:sim_serial": "890100020",
