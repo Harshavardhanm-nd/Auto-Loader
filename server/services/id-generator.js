@@ -37,7 +37,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { COUNTERS_FILE, RUNS_DIR, readJson, writeJson } from '../lib/paths.js';
+import { CONFIG_DIR, COUNTERS_FILE, RUNS_DIR, readJson, writeJson } from '../lib/paths.js';
+import { loadTemplates } from '../lib/config.js';
+
+const FLOORS_FILE = path.join(CONFIG_DIR, 'id-floors.json');
 
 const MAX_ATTEMPTS = 8;
 /** Ids probed past the block itself, so one round trip can step over a batch loaded earlier. */
@@ -80,7 +83,10 @@ function counterKey(env, templateId, seriesName) {
 // refresh. It is the max of what `finish()` recorded and what the run history shows — the
 // history is what covers everything minted before the mark existed.
 //
-// It cannot see ids someone else loaded into IDMS. Nothing here can.
+// It cannot see ids someone else loaded into IDMS, and on a fresh clone it is empty — `data/` is
+// not in git. `config/id-floors.json` is: a committed lowest-id-per-product-type that every machine
+// shares, folded in here as a third source so the allocator, the Ids screen and the "Set to…"
+// refusal all respect it without each having to know about it.
 
 /**
  * The first id a series may use: its cursor, unless that is at or below an id already minted.
@@ -100,8 +106,8 @@ export function effectiveStart(cursor, highWater) {
 export function cursorMoveRefusal({ value, highWater, env }) {
   if (highWater === null || value > highWater) return null;
   return (
-    `${value} is at or below ${highWater}, the highest id this app has already minted for ` +
-    `${env}. Those devices still exist in IDMS even if Salesforce no longer shows them — a ` +
+    `${value} is at or below ${highWater}, the highest id known to be used in ${env} — minted ` +
+    `by this app, or below the floor in config/id-floors.json. Those devices still exist in IDMS even if Salesforce no longer shows them — a ` +
     `sandbox refresh empties Salesforce, not IDMS — so reusing them fails the sync with "asset ` +
     `already exists". Pick a value above ${highWater}.`
   );
@@ -144,14 +150,38 @@ function loadRuns() {
   return names.map((f) => readJson(path.join(RUNS_DIR, f), null));
 }
 
-/** The high-water mark for one series: recorded mark and run history, whichever is higher. */
+/**
+ * The committed lowest id for one series, or null. Pure: takes the parsed floors file.
+ * Keyed by family rather than template, so a product type's shipment-update counter shares its
+ * initial-load floor — they mint into the same physical devices.
+ *
+ * @returns {bigint|null}
+ */
+export function floorFor(floors, env, family, seriesName) {
+  const value = floors?.[env]?.[`${family}:${seriesName}`];
+  return value == null ? null : toBig(value);
+}
+
+function familyOfTemplate(templateId) {
+  return loadTemplates().find((t) => t.id === templateId)?.family ?? null;
+}
+
+/** Largest of the non-null bigints, or null. */
+function maxOf(...values) {
+  return values.reduce((max, v) => (v !== null && (max === null || v > max) ? v : max), null);
+}
+
+/**
+ * The high-water mark for one series: the highest id known to be in use, from the recorded mark,
+ * this machine's run history, or the committed floor (which is the lowest id *allowed*, so it
+ * counts as everything below it being used). Whichever is highest.
+ */
 export function highWaterMark(env, templateId, seriesName, runs = loadRuns()) {
   const stored = loadCounters().highWater?.[counterKey(env, templateId, seriesName)];
   const recorded = stored == null ? null : toBig(stored);
   const history = highestMinted(runs, env, templateId, seriesName);
-  if (recorded === null) return history;
-  if (history === null) return recorded;
-  return recorded > history ? recorded : history;
+  const floor = floorFor(readJson(FLOORS_FILE, {}), env, familyOfTemplate(templateId), seriesName);
+  return maxOf(recorded, history, floor === null ? null : floor - 1n);
 }
 
 function recordHighWater(env, templateId, seriesName, value) {
@@ -236,6 +266,10 @@ function isCheckable(seriesDef) {
  * @param {number}   options.count
  * @param {Function} [options.checkTaken] async (ids[]) => takenIds[]; omit to skip the
  *                   org collision check (offline generation)
+ * @param {Function} [options.orgHighest] async (seriesName, start) => bigint|null — the highest id
+ *                   the org already holds in the band `start` belongs to. Each series starts past
+ *                   it, so a machine with no counters of its own does not open on devices someone
+ *                   else loaded. Omit offline.
  * @param {object}   [options.manualValues] `{ [seriesName]: string[] }` — one value per row,
  *                   in row order, supplied by the operator instead of minted from the
  *                   persisted counter. A series named here is never read from or written back
@@ -248,7 +282,7 @@ function isCheckable(seriesDef) {
  * @returns {Promise<{rows: object[], attempts: number, checked: boolean,
  *                    collisions: string[], manualCollisions: string[], ranges: object}>}
  */
-export async function allocateSeries({ env, templateId, series, count, checkTaken = null, manualValues = {} }) {
+export async function allocateSeries({ env, templateId, series, count, checkTaken = null, orgHighest = null, manualValues = {} }) {
   const n = Number(count);
   if (!Number.isInteger(n) || n < 1) throw new Error('count must be a positive integer');
   if (n > 5000) throw new Error('count above 5000 — split this into multiple runs');
@@ -274,6 +308,16 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
   const starts = {};
   for (const name of autoNames) starts[name] = peekCursor(env, templateId, name, series[name]);
 
+  const orgHighestSeen = {};
+  if (orgHighest) {
+    const checkable = autoNames.filter((name) => isCheckable(series[name]));
+    const highs = await Promise.all(checkable.map((name) => orgHighest(name, starts[name])));
+    checkable.forEach((name, i) => {
+      orgHighestSeen[name] = highs[i] === null ? null : highs[i].toString();
+      starts[name] = effectiveStart(starts[name], highs[i]);
+    });
+  }
+
   assertHeadroom(series, starts, n, autoNames);
 
   const allCollisions = [];
@@ -281,7 +325,7 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (!checkTaken) {
       const rows = buildRows(series, starts, n, manualValues);
-      return finish({ env, templateId, series, starts, n, rows, autoNames, attempts: attempt, checked: false, collisions: [], manualValues, manualCollisions });
+      return finish({ env, templateId, series, starts, n, rows, autoNames, attempts: attempt, checked: false, collisions: [], manualValues, manualCollisions, orgHighestSeen });
     }
 
     // Probe well past the block so a whole batch loaded earlier can be cleared in one query.
@@ -320,7 +364,7 @@ export async function allocateSeries({ env, templateId, series, count, checkTake
       const rows = buildRows(series, starts, n, manualValues);
       return finish({
         env, templateId, series, starts, n, rows, autoNames,
-        attempts: attempt, checked: true, collisions: allCollisions, manualValues, manualCollisions,
+        attempts: attempt, checked: true, collisions: allCollisions, manualValues, manualCollisions, orgHighestSeen,
       });
     }
 
@@ -447,13 +491,13 @@ function rangesFor(series, starts, n, manualValues = {}) {
   return ranges;
 }
 
-function finish({ env, templateId, series, starts, n, rows, autoNames, attempts, checked, collisions, manualValues, manualCollisions }) {
+function finish({ env, templateId, series, starts, n, rows, autoNames, attempts, checked, collisions, manualValues, manualCollisions, orgHighestSeen = {} }) {
   const ranges = rangesFor(series, starts, n, manualValues);
   for (const name of autoNames) {
     setCursor(env, templateId, name, starts[name] + BigInt(n));
     recordHighWater(env, templateId, name, starts[name] + BigInt(n) - 1n);
   }
-  return { rows, attempts, checked, collisions, manualCollisions, ranges };
+  return { rows, attempts, checked, collisions, manualCollisions, ranges, orgHighest: orgHighestSeen };
 }
 
 /**

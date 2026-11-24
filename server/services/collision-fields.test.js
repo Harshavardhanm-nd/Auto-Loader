@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { COLLISION_FIELDS, takenFromRecords, collisionChunkSize, QUERY_URL_LIMIT } from './sf-client.js';
+import { COLLISION_FIELDS, SERIES_FIELD, takenFromRecords, collisionChunkSize, QUERY_URL_LIMIT } from './sf-client.js';
 import { TEMPLATES_DIR } from '../lib/paths.js';
 
 /**
@@ -37,17 +37,7 @@ describe('the fields a collision is looked for in', () => {
     // A cheap guard against adding a series with no corresponding Asset field: if a new series
     // name appears that is not in this map, this test fails and someone has to decide where its
     // values land rather than discovering it from a rejected load.
-    const SERIES_TO_FIELD = {
-      device_id: 'Name',
-      driveri_hub_id: 'Name',
-      serial_number: 'Name',
-      sim_serial: 'SIM_Serial__c',
-      device_imei: 'Device_IMEI__c',
-      mac_id: 'Wifi_Mac__c',
-      // Octo's accessories become Assets in their own right, keyed by Name.
-      wired_speaker_serial: 'Name',
-      native_cam_serial: 'Name',
-    };
+    const SERIES_TO_FIELD = SERIES_FIELD;
 
     const minted = new Set();
     for (const file of fs.readdirSync(TEMPLATES_DIR).filter((f) => f.endsWith('.json'))) {

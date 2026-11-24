@@ -1,0 +1,48 @@
+{
+  "$comment": [
+    "The lowest id each product type may mint, per environment. Keyed '<family>:<series>'.",
+    "",
+    "Counters (data/counters.json) and run history (data/runs/) live on one machine and are not in",
+    "git, so a fresh clone used to start every series at its template's sampleStart — an id that",
+    "was loaded long ago. A sandbox refresh empties Salesforce but not IDMS, so the collision check",
+    "sees those ids as free and IDMS rejects the load with 'already exists'.",
+    "",
+    "This file is the shared memory of what IDMS holds. The allocator never starts below it, nor",
+    "below the local counter, nor at or below the highest id this machine minted, nor at or below",
+    "the highest id the org already holds in the series' band. Raise a value and commit it when a",
+    "series moves to a new range (as testing DHUB did on 2026-11-20, to 4011600001, after another",
+    "loader's IDMS-only hubs rejected two batches). Values only ever go up.",
+    "",
+    "Seeded 2026-11-24 from the counters on the machine that had been doing the loads."
+  ],
+  "testing": {
+    "dhub:driveri_hub_id": "4011600006",
+    "dms:serial_number": "110001528",
+    "driveri:device_id": "98765432300",
+    "driveri:sim_serial": "98765432300",
+    "driveri:device_imei": "98765432300",
+    "haptic:serial_number": "125013",
+    "octo:device_id": "1250730322",
+    "octo:sim_serial": "890000322",
+    "octo:device_imei": "890000322",
+    "octo:wired_speaker_serial": "330099322",
+    "octo:native_cam_serial": "70007322",
+    "vbus:serial_number": "1100401282",
+    "vbus:mac_id": "1100928260"
+  },
+  "staging": {
+    "dhub:driveri_hub_id": "4011500089",
+    "dms:serial_number": "110500038",
+    "driveri:device_id": "22600500169",
+    "driveri:sim_serial": "22600500169",
+    "driveri:device_imei": "22600500169",
+    "haptic:serial_number": "150008",
+    "octo:device_id": "1250800020",
+    "octo:sim_serial": "890100020",
+    "octo:device_imei": "890100020",
+    "octo:wired_speaker_serial": "330200020",
+    "octo:native_cam_serial": "70100020",
+    "vbus:serial_number": "1100500058",
+    "vbus:mac_id": "1100950058"
+  }
+}
