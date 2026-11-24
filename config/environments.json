@@ -144,45 +144,53 @@
       },
       "distributionLists": {
         "$comment": [
-          "Every Staging address is a Salesforce Apex email service, not a netradyne.com mailbox.",
-          "All share the host suffix ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com (re-copied 2026-09-29) but each",
-          "service has its own random subdomain. These are generated per org and CHANGE ON SANDBOX",
-          "REFRESH — re-copy all of them from Setup > Email Services after any refresh, or sends",
-          "will bounce.",
+          "Every Staging operation sends to a @netradyne.com DL (switched 2026-11-24), the same as testing.",
+          "Each DL's member is that operation's Apex email service on host ib-1mvdeai.usa1248s; the",
+          "Apex address changes on a sandbox refresh, the DL does not — after a refresh the DL's member",
+          "is re-pointed by whoever owns the DL, and nothing here changes.",
           "",
-          "Two local parts here differ only by the word 'undo': asset_markdead_emailservice and",
-          "asset_markundodead_emailservice. Sending one to the other reverses the intent, which is",
-          "exactly what the local-part match on every send exists to stop."
+          "Two DLs differ only by 'Undo': Asset-Mark-Dead-Staging and Asset-Mark-UndoDead-Staging.",
+          "Sending one to the other reverses the intent, which is exactly what the local-part match on",
+          "every send exists to stop.",
+          "",
+          "Not routed, because no operation exists for them: AMZ-Shipped-SFDC-3PL-Device-Service_Staging,",
+          "AMZ-Received-SFDC-3PL-Device-Service_Staging and Asset-QA-Reject-Staging.",
+          "updateLoad stays REPLACE_ME: no staging DL was supplied for it, and it has no template in any family."
         ],
         "byOperation": {
           "initialLoad": {
-            "to": "assets_shipped_from_vvdn@x-2qkyl8lwpt0hkl0fhdo47a386mdixa6fgxpwazz760bnj4y1uk.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "The Asset-Shipped-From-MFR-Staging DL, whose member is the assets_shipped_from_vvdn Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Asset-Shipped-From-MFR-Staging@netradyne.com",
             "subject": "Initial Load File",
             "body": "Please find the attached updated Initial Load CSV."
           },
           "shipmentUpdate": {
-            "to": "asset-shipment-update-from-mfr@h-2yyv8wztplf5hmz6fvc2o76jw2qbkiexeapjpoqeb5d42wlvrv.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "Named differently from testing's Asset_Shipment_Update_Testing — do not derive one from the other. The Asset-Shipment-Update-From-MFR-Staging DL, whose member is the asset-shipment-update-from-mfr Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Asset-Shipment-Update-From-MFR-Staging@netradyne.com",
             "subject": "Shipment Update",
             "body": "Please find the attached Initial Load CSV for shipment update processing."
           },
           "received": {
-            "to": "assets_received_at_3pl@1avjnvp2d0dcaqsrkr4phes0md2f3dnvalpcbk9eaowt1y1rxn.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "The Asset-Received-At-3PL-Staging DL, whose member is the assets_received_at_3pl Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Asset-Received-At-3PL-Staging@netradyne.com",
             "subject": "Device Received",
             "body": "Please find the attached Received CSV."
           },
           "faultyReturned": {
-            "$comment": "Labelled 'Asset Returned' in the Staging list. Same local part as testing's 'Faulty Devices Returned', which is what identifies them as the same operation.",
-            "to": "assets_returned_to_vvdn@q-9td09pqrj6whegapwaqxg0btszk8mvzx7nni6p19gtpt5v6l.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "Labelled 'Asset Returned' in the Staging list. The Returned-Faulty-Asset-At-MFR-Staging DL, whose member is the assets_returned_to_vvdn Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Returned-Faulty-Asset-At-MFR-Staging@netradyne.com",
             "subject": "Faulty Devices Returned",
             "body": "Please find the attached Faulty Devices Returned CSV."
           },
           "deviceDead": {
-            "to": "asset_markdead_emailservice@blibzpy235qo9x3gkcjqgtjnf8gr2spxchxwxwwhf6njbgpy0.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "Supplied 2026-11-24 as a new DL creation — if it bounces, the DL has not been created yet. The Asset-Mark-Dead-Staging DL, whose member is the asset_markdead_emailservice Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Asset-Mark-Dead-Staging@netradyne.com",
             "subject": "Device Dead",
             "body": "Please find the attached Device Dead CSV."
           },
           "undoDead": {
-            "to": "asset_markundodead_emailservice@1lro5rdhepnlutsl5158tcl6ey3bbv7t0dvkvyvach84sjx3m5.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "Supplied 2026-11-24 as a new DL creation — if it bounces, the DL has not been created yet. Differs from the mark-dead DL only by 'Undo'. The Asset-Mark-UndoDead-Staging DL, whose member is the asset_markundodead_emailservice Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Asset-Mark-UndoDead-Staging@netradyne.com",
             "subject": "Undo Device Dead",
             "body": "Please find the attached Undo Device Dead CSV."
           },
@@ -193,20 +201,20 @@
             "body": "Please find the attached Update Load CSV."
           },
           "nonRepairable": {
-            "$comment": "Supplied 2026-09-29 as Non-Repairable-Asset-At-MFR-Staging@netradyne.com; this is its Apex email service member.",
-            "to": "assets_non_repairable_at_repair_center@l-mr90jp7r8doj5zzuaobsmni54w93cej21kj4rxeyiqffqohgx.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "The Non-Repairable-Asset-At-MFR-Staging DL, whose member is the assets_non_repairable_at_repair_center Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Non-Repairable-Asset-At-MFR-Staging@netradyne.com",
             "subject": "Non-Repairable Asset At MFR",
             "body": "Please find the attached Non-Repairable Asset CSV."
           },
           "dataUpdate": {
-            "$comment": "Same as initialLoad for Staging — Apex email service.",
-            "to": "assets_shipped_from_vvdn@x-2qkyl8lwpt0hkl0fhdo47a386mdixa6fgxpwazz760bnj4y1uk.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "Same DL as initialLoad — used for Octo data corrections. The Asset-Shipped-From-MFR-Staging DL, whose member is the assets_shipped_from_vvdn Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Asset-Shipped-From-MFR-Staging@netradyne.com",
             "subject": "Data Update",
             "body": "Please find the attached Data Update CSV."
           },
           "rmaReturned": {
-            "$comment": "Deliberately the same address as faultyReturned (Returned-Faulty-Asset-At-MFR-Staging), as in testing — chosen 2026-09-30, no separate RMA Returned DL exists for staging. Unproven: no RMA Returned had been sent from this app in either env when this was set. Poll the first send; if the device does not reach IDMS 7 (Returned RMA), this pairing is wrong.",
-            "to": "assets_returned_to_vvdn@q-9td09pqrj6whegapwaqxg0btszk8mvzx7nni6p19gtpt5v6l.ib-1mvdeai.usa1248s.apex.sandbox.salesforce.com",
+            "$comment": "Deliberately the same DL as faultyReturned, as in testing — chosen 2026-09-30, no separate RMA Returned DL exists. Declared as a bundle in config.test.js. Unproven: poll the first send; if the device does not reach IDMS 7 (Returned RMA), this pairing is wrong. The Returned-Faulty-Asset-At-MFR-Staging DL, whose member is the assets_returned_to_vvdn Apex service. Staging sends to DLs, not to the Apex addresses directly: a DL survives a sandbox refresh, the Apex address does not.",
+            "to": "Returned-Faulty-Asset-At-MFR-Staging@netradyne.com",
             "subject": "RMA Returned",
             "body": "Please find the attached RMA Returned CSV."
           }

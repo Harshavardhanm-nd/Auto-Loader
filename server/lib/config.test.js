@@ -6,10 +6,10 @@
  * Two properties matter most:
  *
  *   - A placeholder address blocks its own pipeline and nothing else.
- *   - Two addresses that differ only in local part are never confused. Both orgs now route
- *     through Salesforce Apex email services, where every address shares a host suffix and
- *     the local part carries the entire meaning — `asset_markdead_emailservice` and
- *     `asset_markundodead_emailservice` are opposite operations on the same host.
+ *   - Two addresses that differ only in local part are never confused. Both orgs route through
+ *     @netradyne.com DLs, so every address shares one host and the local part carries the
+ *     entire meaning — `Asset-Mark-Dead-Staging` and `Asset-Mark-UndoDead-Staging` are opposite
+ *     operations on the same host.
  */
 
 import { test, describe } from 'node:test';
@@ -170,18 +170,6 @@ describe('the mailbox check cannot confuse similar addresses', () => {
     });
 
   }
-
-  test('a right local part on the wrong Apex host is refused', () => {
-    // Staging only: testing sends to @netradyne.com DLs, which share one host. Apex hosts are
-    // per-service, and reusing one service's host with another's local part is the exact
-    // mistake a sandbox refresh invites, since only some addresses get re-copied.
-    const to = (operation) => resolveDistributionList('staging', 'driveri', operation).to;
-    const dead = to('deviceDead');
-    const frankenstein = `${dead.split('@')[0]}@${to('received').split('@')[1]}`;
-
-    assert.notEqual(frankenstein, dead);
-    assert.equal(verdictIn('staging')('deviceDead', frankenstein), 'fail');
-  });
 
   test('testing and staging addresses never cross environments', () => {
     for (const [operation, meta] of Object.entries(loadOperations())) {

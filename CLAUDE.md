@@ -541,29 +541,32 @@ sending **for that pipeline only** — an unconfirmed address is safe to leave i
 family-specific mailbox only when it differs from the shared one.
 
 Note `initialLoad` and `updateLoad` share testing's mailbox by design (the DL is named "Initial
-Load & Update Load"), and staging's `asset_markdead_` / `asset_markundodead_` differ by one word.
+Load & Update Load"), and staging's `Asset-Mark-Dead-Staging` / `Asset-Mark-UndoDead-Staging` differ
+by one word.
 `server/lib/config.test.js` asserts these cannot be confused in either direction.
 
 **`dataUpdate` now shares `initialLoad`'s mailbox in both environments.** It was `REPLACE_ME` in
 both until the Octo work; it is now `Asset-Shipped-From-MFR-Testing` in testing and
-`assets_shipped_from_vvdn` in staging. That makes three operations on one testing address
+`Asset-Shipped-From-MFR-Staging` in staging. That makes three operations on one testing address
 (`initialLoad`, `updateLoad`, `dataUpdate`) and is what two of the `config.test.js` failures are
 about — the test's allowlist still expects two.
 
-**Testing sends every operation to a `@netradyne.com` DL; staging addresses Apex services directly.**
-Each testing DL's member is the Apex email service for that operation, so the DL survives a sandbox
-refresh where the Apex address does not — the 2026-11-20 refresh moved every testing service to host
-`vd-hx6sr2ad.usa666s`. `Assets_MarkDead_Testing` and `Assets_MarkUndoDead_Testing` were supplied as
-*new DL creations*: if a send bounces, the DL has not been created yet. `undoDead` was testing's last
-`REPLACE_ME`, so the mark-dead/undo-dead and initial/shipment confusion tests run in both
-environments; the wrong-Apex-host test stays staging-only, since every testing DL shares one host.
-`faultyReturned`/`rmaReturned` share `Returned-Faulty-Asset-At-MFR-Testing` — a declared bundle. Not
-routed, because no operation exists for them: `AMZ-InTransit`, `AMZ-Received`, `Assets_QA_Reject`
-and `Assets_Out_of_Warranty_Repair`.
-
-Staging's `rmaReturned` also routes to its Faulty Returned address (`8bac2fa`). Both environments
-mark a device dead through the `asset_markdead_emailservice` Apex service — staging directly,
-testing via its DL. Its label changed from "Mark dead" to `DEAD`.
+**Both environments send every operation to a `@netradyne.com` DL, never to an Apex address.**
+Each DL's member is the Apex email service for that operation, so the DL survives a sandbox refresh
+where the Apex address does not — the 2026-11-20 refresh moved every testing service to host
+`vd-hx6sr2ad.usa666s`. Testing switched on 2026-11-20, staging on 2026-11-24 (its members are on
+host `ib-1mvdeai.usa1248s`). **Do not derive one environment's DL names from the other's** — they
+are not a pattern: testing's shipment update is `Asset_Shipment_Update_Testing`, staging's is
+`Asset-Shipment-Update-From-MFR-Staging`; testing's dead DL is `Assets_MarkDead_Testing`,
+staging's `Asset-Mark-Dead-Staging`. The mark-dead and undo-dead DLs in both environments were
+supplied as *new DL creations*: if a send bounces, the DL has not been created yet. The
+mark-dead/undo-dead and initial/shipment confusion tests run in both environments; the old
+wrong-Apex-host test was removed when staging stopped addressing Apex hosts.
+`faultyReturned`/`rmaReturned` share `Returned-Faulty-Asset-At-MFR-<Env>` — a declared bundle in
+both environments (staging since `8bac2fa`). Staging's `updateLoad` is still `REPLACE_ME`: no DL
+was supplied, and it has no template anyway. Not routed, because no operation exists for them: the
+AMZ in-transit and received DLs, QA Reject, and testing's Out-of-Warranty Repair. `deviceDead`'s
+label changed from "Mark dead" to `DEAD`.
 
 ### The constant columns live in `config/profiles.json`
 
@@ -971,8 +974,8 @@ the `rmaReturned` operation, which is how RMA Returned became a sendable, pollab
   *within* one logical format. Don't unify them.
 - **`escapeField` refuses** commas/quotes/newlines rather than quoting — no column in any format
   legitimately contains them, so it's caller data corruption.
-- **Mailbox matching is on the local part**, not the domain. Every testing address is
-  `@netradyne.com` and staging's are all Apex email services on one host suffix.
+- **Mailbox matching is on the local part**, not the domain. Every address in both
+  environments is a `@netradyne.com` DL, so the domain tells two operations apart in neither.
 - **One send in flight per `"<operation>:<family>"`, enforced by a claim, not by a check.**
   `claimSend`/`releaseSend` (`run-store.js`) take exclusive hold of the pipeline *before*
   `deliver()`; the route releases in a `finally`, and a claim abandoned by a crash expires after
